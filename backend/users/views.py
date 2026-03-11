@@ -60,16 +60,11 @@ def login_view(request):
             status=status.HTTP_400_BAD_REQUEST
         )
     
-    # Try to authenticate with username first, then email
+    # Look up user by username, then authenticate via email (USERNAME_FIELD)
     user = None
     try:
-        # Check if input is email
-        if '@' in username:
-            user_obj = User.objects.get(email=username)
-            user = authenticate(request, username=user_obj.username, password=password)
-        else:
-            # Use username directly
-            user = authenticate(request, username=username, password=password)
+        user_obj = User.objects.get(username=username)
+        user = authenticate(request, username=user_obj.email, password=password)
     except User.DoesNotExist:
         pass
     
