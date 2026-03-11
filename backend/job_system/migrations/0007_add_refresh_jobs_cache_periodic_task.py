@@ -7,7 +7,7 @@ def add_periodic_task(apps, schema_editor):
 
     schedule, _ = IntervalSchedule.objects.get_or_create(
         every=4,
-        period=IntervalSchedule.HOURS,
+        period='hours',
     )
     PeriodicTask.objects.get_or_create(
         name='Refresh Jobs Redis Cache',
