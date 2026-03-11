@@ -39,7 +39,6 @@ INSTALLED_APPS = [
     'ai_agents',
     'admin_panel',  # Custom admin panel (not Django admin)
     'payments',
-    'django_celery_beat',
 ]
 
 MIDDLEWARE = [
@@ -274,4 +273,11 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
-CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+from celery.schedules import crontab
+CELERY_BEAT_SCHEDULE = {
+    'refresh-jobs-cache-every-4-hours': {
+        'task': 'job_system.tasks.refresh_jobs_cache',
+        'schedule': crontab(minute=0, hour='*/4'),
+    },
+}
