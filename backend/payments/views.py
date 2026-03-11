@@ -15,7 +15,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import TokenPack, Payment, TokenTransaction
 from .token_service import get_or_create_balance, add_credits
 from .mpesa_service import mpesa_service
-from .flutterwave_service import flutterwave_service
+from .pesapal_service import pesapal_service
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ class MpesaCallbackView(APIView):
 
 
 class InitiateCardPaymentView(APIView):
-    """Initiate Flutterwave card payment — returns a payment link."""
+    """Initiate PesaPal card payment — returns a payment link."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -203,14 +203,15 @@ class InitiateCardPaymentView(APIView):
             credits_to_add=pack.credits,
         )
 
-        result = flutterwave_service.initiate_payment(
+        result = pesapal_service.initiate_payment(
             user=request.user,
             token_pack=pack,
             payment_id=str(payment.id),
         )
 
         if result['success']:
-            payment.flutterwave_tx_ref = result['tx_ref']
+            payment.pesapal_order_tracking_id = result['order_tracking_id']
+            payment.pesapal_order_ref = result['order_ref']
             payment.save()
             return Response({
                 'success': True,
@@ -224,69 +225,30 @@ class InitiateCardPaymentView(APIView):
 
 
 @method_decorator(csrf_exempt, name='dispatch')
-class FlutterwaveWebhookView(APIView):
-    """Flutterwave webhook + redirect handler after card payment."""
+class PesaPalCallbackView(APIView):
+    """PesaPal redirects user here after card payment completes."""
     permission_classes = [AllowAny]
 
-    def post(self, request):
-        """Webhook from Flutterwave servers."""
-        try:
-            event = request.data.get('event', '')
-            data = request.data.get('data', {})
-
-            if event != 'charge.completed':
-                return Response({'status': 'ignored'})
-
-            tx_ref = data.get('tx_ref', '')
-            tx_id = str(data.get('id', ''))
-
-            payment = Payment.objects.filter(flutterwave_tx_ref=tx_ref).first()
-            if not payment:
-                return Response({'status': 'not_found'})
-
-            if data.get('status') == 'successful' and not payment.credits_added:
-                verify = flutterwave_service.verify_transaction(tx_id)
-                if verify['success']:
-                    payment.flutterwave_tx_id = tx_id
-                    payment.status = 'completed'
-                    payment.completed_at = timezone.now()
-                    payment.gateway_response = data
-                    payment.save()
-
-                    add_credits(
-                        user=payment.user,
-                        amount=payment.credits_to_add,
-                        description=f'Purchased {payment.credits_to_add} credits via card (Ref: {tx_ref})',
-                        transaction_type='purchase',
-                        payment=payment,
-                    )
-                    payment.credits_added = True
-                    payment.save()
-
-        except Exception as e:
-            logger.error(f"Flutterwave webhook error: {e}", exc_info=True)
-
-        return Response({'status': 'ok'})
-
     def get(self, request):
-        """Redirect URL after user completes card payment on Flutterwave."""
-        status_param = request.GET.get('status', '')
-        tx_ref = request.GET.get('tx_ref', '')
-        tx_id = request.GET.get('transaction_id', '')
+        """Redirect after user pays on PesaPal."""
+        order_tracking_id = request.GET.get('OrderTrackingId', '')
+        order_merchant_ref = request.GET.get('OrderMerchantReference', '')
 
-        payment = Payment.objects.filter(flutterwave_tx_ref=tx_ref).first()
+        payment = Payment.objects.filter(pesapal_order_tracking_id=order_tracking_id).first()
+        if not payment:
+            payment = Payment.objects.filter(pesapal_order_ref=order_merchant_ref).first()
 
-        if status_param == 'successful' and payment and not payment.credits_added:
-            verify = flutterwave_service.verify_transaction(tx_id)
+        if payment and not payment.credits_added:
+            verify = pesapal_service.verify_transaction(order_tracking_id)
             if verify['success']:
-                payment.flutterwave_tx_id = tx_id
                 payment.status = 'completed'
                 payment.completed_at = timezone.now()
+                payment.gateway_response = verify.get('data', {})
                 payment.save()
                 add_credits(
                     user=payment.user,
                     amount=payment.credits_to_add,
-                    description=f'Purchased {payment.credits_to_add} credits via card',
+                    description=f'Purchased {payment.credits_to_add} credits via card (PesaPal)',
                     transaction_type='purchase',
                     payment=payment,
                 )
@@ -294,6 +256,44 @@ class FlutterwaveWebhookView(APIView):
                 payment.save()
 
         payment_id = str(payment.id) if payment else ''
-        if status_param == 'successful':
-            return HttpResponseRedirect(f"http://localhost:3001/payments/success?payment_id={payment_id}")
-        return HttpResponseRedirect("http://localhost:3001/payments/failed")
+        frontend_base = 'https://careerfromzero.com'
+        if payment and payment.status == 'completed':
+            return HttpResponseRedirect(f"{frontend_base}/payments/success?payment_id={payment_id}")
+        return HttpResponseRedirect(f"{frontend_base}/payments/failed")
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class PesaPalIPNView(APIView):
+    """PesaPal IPN — server-to-server notification."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        try:
+            order_tracking_id = request.data.get('OrderTrackingId', '')
+            order_merchant_ref = request.data.get('OrderMerchantReference', '')
+
+            payment = Payment.objects.filter(pesapal_order_tracking_id=order_tracking_id).first()
+            if not payment:
+                payment = Payment.objects.filter(pesapal_order_ref=order_merchant_ref).first()
+
+            if payment and not payment.credits_added:
+                verify = pesapal_service.verify_transaction(order_tracking_id)
+                if verify['success']:
+                    payment.status = 'completed'
+                    payment.completed_at = timezone.now()
+                    payment.gateway_response = verify.get('data', {})
+                    payment.save()
+                    add_credits(
+                        user=payment.user,
+                        amount=payment.credits_to_add,
+                        description=f'Purchased {payment.credits_to_add} credits via card (PesaPal IPN)',
+                        transaction_type='purchase',
+                        payment=payment,
+                    )
+                    payment.credits_added = True
+                    payment.save()
+
+        except Exception as e:
+            logger.error(f"PesaPal IPN error: {e}", exc_info=True)
+
+        return Response({'status': 'ok'})

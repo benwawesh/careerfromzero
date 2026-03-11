@@ -131,7 +131,7 @@ class Payment(models.Model):
     """Payment records for token pack purchases."""
     PAYMENT_METHODS = [
         ('mpesa', 'M-Pesa'),
-        ('card', 'Visa/Mastercard (Flutterwave)'),
+        ('card', 'Visa/Mastercard (PesaPal)'),
     ]
     STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -154,9 +154,9 @@ class Payment(models.Model):
     mpesa_merchant_request_id = models.CharField(max_length=100, blank=True)
     mpesa_receipt_number = models.CharField(max_length=50, blank=True)
 
-    # Flutterwave fields
-    flutterwave_tx_ref = models.CharField(max_length=100, blank=True, db_index=True)
-    flutterwave_tx_id = models.CharField(max_length=100, blank=True)
+    # PesaPal fields
+    pesapal_order_tracking_id = models.CharField(max_length=100, blank=True, db_index=True)
+    pesapal_order_ref = models.CharField(max_length=100, blank=True)
 
     gateway_response = models.JSONField(default=dict, blank=True)
     credits_added = models.BooleanField(default=False)
