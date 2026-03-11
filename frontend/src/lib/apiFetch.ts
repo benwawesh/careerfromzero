@@ -7,7 +7,7 @@
  * redirected to /login.
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL
+const API_URL = process.env.NEXT_PUBLIC_API_URL || ''
 
 async function refreshAccessToken(): Promise<string | null> {
   const refresh = localStorage.getItem('refresh_token')

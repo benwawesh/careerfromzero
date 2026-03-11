@@ -64,7 +64,7 @@ function Profile() {
   const fetchProfile = async () => {
     try {
       const token = localStorage.getItem('access_token')
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/profile/`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/auth/profile/`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (response.ok) {
@@ -92,7 +92,7 @@ function Profile() {
     setSuccess('')
     try {
       const token = localStorage.getItem('access_token')
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/profile/`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/auth/profile/`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',

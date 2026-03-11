@@ -41,7 +41,7 @@ export default function AdminDashboard() {
     setLoadingUsers(true)
     try {
       const token = localStorage.getItem('access_token')
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/sys-mgmt-8832/users/`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/sys-mgmt-8832/users/`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
