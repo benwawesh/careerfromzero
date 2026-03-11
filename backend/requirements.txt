@@ -43,6 +43,11 @@ pgvector>=0.2.0
 # WSGI Server
 gunicorn>=21.0.0
 
+# Caching & Async Tasks
+django-redis>=5.4.0
+celery[redis]>=5.3.0
+django-celery-beat>=2.6.0
+
 # Utilities
 python-dotenv>=1.0.0
 httpx>=0.25.0

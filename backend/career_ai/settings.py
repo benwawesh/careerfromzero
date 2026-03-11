@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'ai_agents',
     'admin_panel',  # Custom admin panel (not Django admin)
     'payments',
+    'django_celery_beat',
 ]
 
 MIDDLEWARE = [
@@ -247,3 +248,30 @@ AUTHENTICATION_BACKENDS = [
 # Admin settings - using custom admin instead of Django admin
 # Admin URL will be obscure for security
 ADMIN_URL_PATH = config('ADMIN_URL_PATH', default='sys-mgmt-8832')
+
+# ── Redis / Caching ──────────────────────────────────────────────────────────
+REDIS_URL = config('REDIS_URL', default='redis://redis:6379/0')
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': REDIS_URL,
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            'SOCKET_CONNECT_TIMEOUT': 5,
+            'SOCKET_TIMEOUT': 5,
+            'IGNORE_EXCEPTIONS': True,  # Fall back to DB on Redis outage
+        },
+        'KEY_PREFIX': 'cai',
+        'TIMEOUT': 21600,  # 6 hours
+    }
+}
+
+# ── Celery ────────────────────────────────────────────────────────────────────
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'

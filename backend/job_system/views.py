@@ -7,6 +7,7 @@ from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from django.core.cache import cache
 from django.db.models import Q, Count
 from django.utils import timezone
 import logging
@@ -81,12 +82,50 @@ class JobViewSet(viewsets.ReadOnlyModelViewSet):
         
         return queryset.distinct()
     
+    JOBS_LIST_CACHE_KEY = 'jobs:list:unfiltered'
+    JOBS_FINGERPRINT_KEY = 'jobs:list:fingerprint'
+    JOBS_CACHE_TIMEOUT = 21600  # 6 hours
+
     def get_serializer_class(self):
         """Get appropriate serializer based on action"""
         if self.action == 'retrieve':
             return JobDetailSerializer
         return JobSerializer
-    
+
+    def list(self, request, *args, **kwargs):
+        """Cache-aside: serve unfiltered job list from Redis, fall back to DB on miss."""
+        is_filtered = any(
+            request.query_params.get(p)
+            for p in ('query', 'location', 'job_type', 'experience_level',
+                      'salary_min', 'salary_max', 'sources', 'search', 'ordering')
+        )
+        if is_filtered:
+            return super().list(request, *args, **kwargs)
+
+        cached = cache.get(self.JOBS_LIST_CACHE_KEY)
+        if cached is not None:
+            page = self.paginate_queryset(cached)
+            if page is not None:
+                return self.get_paginated_response(page)
+            return Response(cached)
+
+        # Cache miss — query DB, store in Redis
+        queryset = self.get_queryset()
+        data = self.get_serializer(queryset, many=True).data
+        cache.set(self.JOBS_LIST_CACHE_KEY, data, timeout=self.JOBS_CACHE_TIMEOUT)
+
+        # Store fingerprint so Beat task knows current state
+        total = queryset.count()
+        latest = queryset.values_list('updated_at', flat=True).first()
+        fingerprint = f'{total}:{latest.isoformat() if latest else "none"}'
+        cache.set(self.JOBS_FINGERPRINT_KEY, fingerprint, timeout=self.JOBS_CACHE_TIMEOUT)
+
+        logger.info('JobViewSet.list: cache miss — cached %d jobs.', len(data))
+        page = self.paginate_queryset(data)
+        if page is not None:
+            return self.get_paginated_response(page)
+        return Response(data)
+
     def retrieve(self, request, *args, **kwargs):
         """Get job details and increment view count"""
         instance = self.get_object()
