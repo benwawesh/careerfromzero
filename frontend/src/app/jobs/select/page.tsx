@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { matchJobs, batchCustomize } from '@/lib/workflowApi';
 
@@ -21,7 +21,7 @@ interface MatchedJob {
   suggestions: string[];
 }
 
-export default function JobSelectionPage() {
+function JobSelectionContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const cvId = searchParams.get('cv_id');
@@ -407,5 +407,17 @@ export default function JobSelectionPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function JobSelectionPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
+      </div>
+    }>
+      <JobSelectionContent />
+    </Suspense>
   );
 }

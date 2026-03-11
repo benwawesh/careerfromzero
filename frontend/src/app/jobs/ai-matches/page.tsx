@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -99,11 +99,23 @@ function stripHtml(html: string): string {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function AIMatchesPage() {
+function AIMatchesContent() {
   return (
     <ProtectedRoute>
       <AIMatchesBoard />
     </ProtectedRoute>
+  )
+}
+
+export default function AIMatchesPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
+      </div>
+    }>
+      <AIMatchesContent />
+    </Suspense>
   )
 }
 
