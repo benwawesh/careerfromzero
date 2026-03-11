@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { apiFetch } from '@/lib/apiFetch'
@@ -114,21 +114,21 @@ export default function JobsPage() {
 
 function JobsMarketplace() {
   const [jobs, setJobs] = useState<Job[]>([])
+  const [totalCount, setTotalCount] = useState(0)
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
-  
-  // Pagination State
+
+  // Pagination State (server-side)
   const [currentPage, setCurrentPage] = useState(1)
-  const ITEMS_PER_PAGE = 100
-  
+
   // Global Search State
   const [keyword, setKeyword] = useState('')
   const [jobFunction, setJobFunction] = useState('')
   const [industry, setIndustry] = useState('')
   const [location, setLocation] = useState('')
   const [experience, setExperience] = useState('')
-  const [countryFilter, setCountryFilter] = useState('all') // 'all', 'kenya', 'international'
-  
+  const [countryFilter, setCountryFilter] = useState('all')
+
   // Filter Sidebar State
   const [searchWithin, setSearchWithin] = useState('')
   const [jobTypes, setJobTypes] = useState<Set<string>>(new Set())
@@ -138,22 +138,47 @@ function JobsMarketplace() {
   const [expLevels, setExpLevels] = useState<Set<string>>(new Set())
   const [datePosted, setDatePosted] = useState('')
   const [orderBy, setOrderBy] = useState('latest')
-  
+
   // Expanded filter sections
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['job_types']))
 
+  // Fetch from API whenever page or filters change
   useEffect(() => {
-    fetchJobs()
-    fetchSavedIds()
-  }, [])
+    fetchJobs(currentPage)
+  }, [currentPage, countryFilter, jobTypes, filterLocations, expLevels, orderBy])
 
-  async function fetchJobs() {
+  // Debounce text search inputs
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setCurrentPage(1)
+      fetchJobs(1)
+    }, 400)
+    return () => clearTimeout(t)
+  }, [keyword, searchWithin, salaryMin, salaryMax])
+
+  useEffect(() => { fetchSavedIds() }, [])
+
+  async function fetchJobs(page: number) {
     setLoading(true)
     try {
-      const r = await apiFetch('/api/jobs/jobs/')
+      const params = new URLSearchParams()
+      params.set('page', String(page))
+      const q = searchWithin || keyword
+      if (q) params.set('search', q)
+      jobTypes.forEach(t => params.append('job_type', t))
+      filterLocations.forEach(l => params.append('location', l))
+      expLevels.forEach(e => params.append('experience_level', e))
+      if (salaryMin) params.set('salary_min', salaryMin)
+      if (salaryMax) params.set('salary_max', salaryMax)
+      if (countryFilter !== 'all') params.set('country', countryFilter)
+      if (orderBy === 'popular') params.set('ordering', '-view_count')
+      else if (orderBy === 'featured') params.set('ordering', '-is_featured')
+
+      const r = await apiFetch(`/api/jobs/jobs/?${params}`)
       if (r.ok) {
         const d = await r.json()
-        setJobs(Array.isArray(d) ? d : (d.results || []))
+        setJobs(d.results || (Array.isArray(d) ? d : []))
+        setTotalCount(d.count || 0)
       }
     } finally {
       setLoading(false)
@@ -207,12 +232,13 @@ function JobsMarketplace() {
   }
 
   function handleSearch() {
-    // Will implement full search with backend filters
-    console.log('Search with:', { keyword, jobFunction, industry, location, experience })
+    setCurrentPage(1)
+    fetchJobs(1)
   }
 
   function resetFilters() {
     setSearchWithin('')
+    setKeyword('')
     setJobTypes(new Set())
     setFilterLocations(new Set())
     setSalaryMin('')
@@ -220,104 +246,15 @@ function JobsMarketplace() {
     setExpLevels(new Set())
     setDatePosted('')
     setOrderBy('latest')
+    setCountryFilter('all')
+    setCurrentPage(1)
   }
 
-  const displayed = useCallback(() => {
-    let list = [...jobs]
-    
-    // Country Filter: Separate Kenyan and International jobs
-    if (countryFilter === 'kenya') {
-      list = list.filter(job => isKenyanJob(job))
-    } else if (countryFilter === 'international') {
-      list = list.filter(job => !isKenyanJob(job))
-    }
-    
-    // Apply sidebar filters
-    if (searchWithin) {
-      const q = searchWithin.toLowerCase()
-      list = list.filter(j =>
-        j.title.toLowerCase().includes(q) ||
-        j.company.toLowerCase().includes(q) ||
-        j.description.toLowerCase().includes(q)
-      )
-    }
-    
-    if (jobTypes.size > 0) {
-      list = list.filter(j => j.job_type && jobTypes.has(j.job_type))
-    }
-    
-    if (filterLocations.size > 0) {
-      list = list.filter(j => j.location && [...filterLocations].some(loc => 
-        j.location!.toLowerCase().includes(loc.toLowerCase())
-      ))
-    }
-    
-    if (salaryMin) {
-      list = list.filter(j => (j.salary_min || 0) >= parseInt(salaryMin))
-    }
-    
-    if (salaryMax) {
-      list = list.filter(j => (j.salary_max || Infinity) <= parseInt(salaryMax))
-    }
-    
-    if (expLevels.size > 0) {
-      list = list.filter(j => j.experience_level && expLevels.has(j.experience_level))
-    }
-    
-    if (datePosted) {
-      const now = new Date()
-      if (datePosted === 'today') {
-        list = list.filter(j => {
-          if (!j.posted_date) return false
-          const posted = new Date(j.posted_date)
-          return posted.toDateString() === now.toDateString()
-        })
-      } else if (datePosted === 'week') {
-        const weekAgo = new Date()
-        weekAgo.setDate(weekAgo.getDate() - 7)
-        list = list.filter(j => j.posted_date && new Date(j.posted_date) >= weekAgo)
-      } else if (datePosted === 'month') {
-        const monthAgo = new Date()
-        monthAgo.setMonth(monthAgo.getMonth() - 1)
-        list = list.filter(j => j.posted_date && new Date(j.posted_date) >= monthAgo)
-      }
-    }
-    
-    // Prioritize Kenyan jobs first when country filter is 'all'
-    if (countryFilter === 'all') {
-      list.sort((a, b) => {
-        const aIsKenyan = isKenyanJob(a) ? 0 : 1
-        const bIsKenyan = isKenyanJob(b) ? 0 : 1
-        return aIsKenyan - bIsKenyan
-      })
-    }
-    
-    // Apply ordering
-    if (orderBy === 'latest') {
-      list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-    } else if (orderBy === 'featured') {
-      list.sort((a, b) => Number(b.is_featured || 0) - Number(a.is_featured || 0))
-    } else if (orderBy === 'popular') {
-      list.sort((a, b) => (b.view_count || 0) - (a.view_count || 0))
-    }
-    
-    return list
-  }, [jobs, searchWithin, jobTypes, filterLocations, salaryMin, salaryMax, expLevels, datePosted, orderBy, countryFilter])()
-
-  // Pagination logic
-  const totalPages = Math.ceil(displayed.length / ITEMS_PER_PAGE)
+  // Server-side pagination
+  const ITEMS_PER_PAGE = 100
+  const totalPages = Math.ceil(totalCount / ITEMS_PER_PAGE)
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE
-  const endIndex = startIndex + ITEMS_PER_PAGE
-  const paginatedJobs = displayed.slice(startIndex, endIndex)
-
-  // Reset to page 1 when filters change
-  useEffect(() => {
-    setCurrentPage(1)
-  }, [searchWithin, jobTypes, filterLocations, salaryMin, salaryMax, expLevels, datePosted, orderBy, countryFilter])
-
-  // Count Kenyan vs International jobs
-  const kenyanJobCount = jobs.filter(isKenyanJob).length
-  const internationalJobCount = jobs.length - kenyanJobCount
+  const paginatedJobs = jobs  // API already returns the right page
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -437,7 +374,7 @@ function JobsMarketplace() {
                           : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                       }`}
                     >
-                      All ({jobs.length.toLocaleString()})
+                      All ({totalCount.toLocaleString()})
                     </button>
                     <button
                       onClick={() => setCountryFilter('kenya')}
@@ -447,7 +384,7 @@ function JobsMarketplace() {
                           : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                       }`}
                     >
-                      🇰🇪 Kenya ({kenyanJobCount.toLocaleString()})
+                      🇰🇪 Kenya{countryFilter === 'kenya' ? ` (${totalCount.toLocaleString()})` : ''}
                     </button>
                     <button
                       onClick={() => setCountryFilter('international')}
@@ -457,7 +394,7 @@ function JobsMarketplace() {
                           : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                       }`}
                     >
-                      🌍 International ({internationalJobCount.toLocaleString()})
+                      🌍 International{countryFilter === 'international' ? ` (${totalCount.toLocaleString()})` : ''}
                     </button>
                   </div>
                 </div>
@@ -472,10 +409,10 @@ function JobsMarketplace() {
             {/* Results Count */}
             <div className="flex items-center justify-between mb-4">
               <p className="text-sm text-gray-500">
-                {loading ? 'Loading...' : `${displayed.length} job${displayed.length !== 1 ? 's' : ''} found`}
-                {!loading && displayed.length > 0 && (
+                {loading ? 'Loading...' : `${totalCount.toLocaleString()} job${totalCount !== 1 ? 's' : ''} found`}
+                {!loading && totalCount > 0 && (
                   <span className="ml-2 text-gray-400">
-                    (Page {currentPage} of {totalPages}, showing {startIndex + 1}-{Math.min(endIndex, displayed.length)})
+                    (Page {currentPage} of {totalPages}, showing {startIndex + 1}-{Math.min(startIndex + jobs.length, totalCount)})
                   </span>
                 )}
               </p>
@@ -493,7 +430,7 @@ function JobsMarketplace() {
               <div className="flex justify-center py-20">
                 <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-red-700" />
               </div>
-            ) : displayed.length === 0 ? (
+            ) : jobs.length === 0 ? (
               <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
                 <p className="text-4xl mb-3">🔍</p>
                 <h3 className="text-lg font-semibold text-gray-900 mb-1">No jobs found</h3>

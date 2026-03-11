@@ -42,44 +42,59 @@ class JobViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ['title', 'company', 'description', 'location']
     ordering_fields = ['created_at', 'salary_max', 'salary_min', 'title', 'company']
     
+    KENYAN_SOURCES = ['brightermonday', 'myjobmag', 'fuzu', 'kenyajob']
+    KENYAN_KEYWORDS = ['kenya', 'nairobi', 'mombasa', 'kisumu', 'nakuru', 'eldoret']
+
     def get_queryset(self):
-        """Get jobs with filtering"""
-        queryset = Job.objects.filter(is_active=True)
-        
-        # Basic filters
-        query = self.request.query_params.get('query')
-        location = self.request.query_params.get('location')
-        job_type = self.request.query_params.get('job_type')
-        experience_level = self.request.query_params.get('experience_level')
-        salary_min = self.request.query_params.get('salary_min')
-        salary_max = self.request.query_params.get('salary_max')
-        sources = self.request.query_params.getlist('sources')
-        
+        queryset = Job.objects.filter(is_active=True).order_by('-created_at')
+        p = self.request.query_params
+
+        query = p.get('query') or p.get('search')
+        locations = p.getlist('location')
+        job_types = p.getlist('job_type')
+        exp_levels = p.getlist('experience_level')
+        salary_min = p.get('salary_min')
+        salary_max = p.get('salary_max')
+        sources = p.getlist('sources')
+        country = p.get('country')
+        ordering = p.get('ordering')
+
         if query:
             queryset = queryset.filter(
                 Q(title__icontains=query) |
                 Q(company__icontains=query) |
                 Q(description__icontains=query)
             )
-        
-        if location:
-            queryset = queryset.filter(location__icontains=location)
-        
-        if job_type:
-            queryset = queryset.filter(job_type=job_type)
-        
-        if experience_level:
-            queryset = queryset.filter(experience_level=experience_level)
-        
+        if locations:
+            loc_q = Q()
+            for loc in locations:
+                loc_q |= Q(location__icontains=loc)
+            queryset = queryset.filter(loc_q)
+        if job_types:
+            queryset = queryset.filter(job_type__in=job_types)
+        if exp_levels:
+            queryset = queryset.filter(experience_level__in=exp_levels)
         if salary_min:
             queryset = queryset.filter(salary_max__gte=salary_min)
-        
         if salary_max:
             queryset = queryset.filter(salary_min__lte=salary_max)
-        
         if sources:
             queryset = queryset.filter(source__in=sources)
-        
+        if country == 'kenya':
+            kq = Q(source__in=self.KENYAN_SOURCES)
+            for kw in self.KENYAN_KEYWORDS:
+                kq |= Q(location__icontains=kw)
+            queryset = queryset.filter(kq)
+        elif country == 'international':
+            kq = Q(source__in=self.KENYAN_SOURCES)
+            for kw in self.KENYAN_KEYWORDS:
+                kq |= Q(location__icontains=kw)
+            queryset = queryset.exclude(kq)
+        if ordering == '-view_count':
+            queryset = queryset.order_by('-view_count')
+        elif ordering == '-is_featured':
+            queryset = queryset.order_by('-is_featured', '-created_at')
+
         return queryset.distinct()
     
     JOBS_LIST_CACHE_KEY = 'jobs:list:unfiltered'
@@ -93,38 +108,27 @@ class JobViewSet(viewsets.ReadOnlyModelViewSet):
         return JobSerializer
 
     def list(self, request, *args, **kwargs):
-        """Cache-aside: serve unfiltered job list from Redis, fall back to DB on miss."""
+        """Cache-aside per page: serve each unfiltered page from Redis, fall back to DB on miss."""
         is_filtered = any(
             request.query_params.get(p)
             for p in ('query', 'location', 'job_type', 'experience_level',
-                      'salary_min', 'salary_max', 'sources', 'search', 'ordering')
+                      'salary_min', 'salary_max', 'sources', 'search', 'ordering', 'country')
         )
         if is_filtered:
             return super().list(request, *args, **kwargs)
 
-        cached = cache.get(self.JOBS_LIST_CACHE_KEY)
+        page_num = request.query_params.get('page', '1')
+        cache_key = f'{self.JOBS_LIST_CACHE_KEY}:page:{page_num}'
+
+        cached = cache.get(cache_key)
         if cached is not None:
-            page = self.paginate_queryset(cached)
-            if page is not None:
-                return self.get_paginated_response(page)
             return Response(cached)
 
-        # Cache miss — query DB, store in Redis
-        queryset = self.get_queryset()
-        data = self.get_serializer(queryset, many=True).data
-        cache.set(self.JOBS_LIST_CACHE_KEY, data, timeout=self.JOBS_CACHE_TIMEOUT)
-
-        # Store fingerprint so Beat task knows current state
-        total = queryset.count()
-        latest = queryset.values_list('updated_at', flat=True).first()
-        fingerprint = f'{total}:{latest.isoformat() if latest else "none"}'
-        cache.set(self.JOBS_FINGERPRINT_KEY, fingerprint, timeout=self.JOBS_CACHE_TIMEOUT)
-
-        logger.info('JobViewSet.list: cache miss — cached %d jobs.', len(data))
-        page = self.paginate_queryset(data)
-        if page is not None:
-            return self.get_paginated_response(page)
-        return Response(data)
+        # Cache miss — let DRF paginate normally (fast: LIMIT 100 OFFSET N)
+        response = super().list(request, *args, **kwargs)
+        cache.set(cache_key, response.data, timeout=self.JOBS_CACHE_TIMEOUT)
+        logger.info('JobViewSet.list: cached page %s (%d jobs).', page_num, len(response.data.get('results', [])))
+        return response
 
     def retrieve(self, request, *args, **kwargs):
         """Get job details and increment view count"""

@@ -29,11 +29,20 @@ def refresh_jobs_cache(self):
             logger.info('refresh_jobs_cache: no change (%s), skipping.', fingerprint)
             return {'status': 'skipped', 'fingerprint': fingerprint}
 
-        data = JobSerializer(qs, many=True).data
-        cache.set(JOBS_LIST_CACHE_KEY, data, timeout=JOBS_CACHE_TIMEOUT)
-        cache.set(JOBS_FINGERPRINT_KEY, fingerprint, timeout=JOBS_CACHE_TIMEOUT)
+        # Clear all cached pages so they get refreshed on next request
+        from django_redis import get_redis_connection
+        try:
+            conn = get_redis_connection('default')
+            pattern = f'cai:{JOBS_LIST_CACHE_KEY}:page:*'
+            keys = conn.keys(pattern)
+            if keys:
+                conn.delete(*keys)
+                logger.info('refresh_jobs_cache: cleared %d cached pages.', len(keys))
+        except Exception as e:
+            logger.warning('refresh_jobs_cache: could not clear page keys: %s', e)
 
-        logger.info('refresh_jobs_cache: refreshed %d jobs.', total)
+        cache.set(JOBS_FINGERPRINT_KEY, fingerprint, timeout=JOBS_CACHE_TIMEOUT)
+        logger.info('refresh_jobs_cache: fingerprint updated, pages cleared for refresh.')
         return {'status': 'refreshed', 'count': total}
 
     except Exception as exc:
