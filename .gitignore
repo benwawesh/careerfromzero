@@ -1,0 +1,57 @@
+# ─── Python / Django ───────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+backend/venv/
+venv/
+env/
+
+# Django
+backend/.env
+backend/media/
+backend/logs/
+backend/staticfiles/
+backend/db.sqlite3
+*.log
+
+# ─── Node / Next.js ────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env
+frontend/.env.local
+frontend/.env*.local
+frontend/tsconfig.tsbuildinfo
+
+# ─── Secrets & Credentials ─────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ─── IDE / Editor ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Database ──────────────────────────────────────────────────────────────
+*.sqlite3
+*.db
+
+# ─── Uploads / Media ───────────────────────────────────────────────────────
+backend/media/
+
+# ─── Misc ──────────────────────────────────────────────────────────────────
+.coverage
+htmlcov/
+.pytest_cache/
+.cache/

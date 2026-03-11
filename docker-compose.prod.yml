@@ -1,0 +1,60 @@
+# Production docker-compose
+# Usage: docker-compose -f docker-compose.prod.yml up -d
+
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    restart: always
+    volumes:
+      - media_data:/app/media
+      - static_data:/app/staticfiles
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - db
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             gunicorn career_ai.wsgi:application
+             --bind 0.0.0.0:8000
+             --workers 3
+             --timeout 120"
+
+  frontend:
+    build: ./frontend
+    restart: always
+    environment:
+      - NEXT_PUBLIC_API_URL=https://careerfromzero.com
+    command: npm start -- -p 3001
+
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/careerfromzero.conf:/etc/nginx/conf.d/careerfromzero.conf
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - media_data:/app/media:ro
+      - static_data:/app/staticfiles:ro
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  postgres_data:
+  media_data:
+  static_data:
