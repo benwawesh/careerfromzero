@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { listApplications } from '@/lib/workflowApi';
 
@@ -16,7 +17,7 @@ interface Application {
   job_url: string;
 }
 
-export default function PreviewPage() {
+function PreviewContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const cvId = searchParams.get('cv_id');
@@ -315,5 +316,13 @@ export default function PreviewPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function PreviewPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gray-50 flex items-center justify-center"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" /></div>}>
+      <PreviewContent />
+    </Suspense>
   );
 }
