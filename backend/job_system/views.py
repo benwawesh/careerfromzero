@@ -443,7 +443,7 @@ class JobViewSet(viewsets.ReadOnlyModelViewSet):
         Returns: {tailored_summary, key_skills, changes_made, cover_letter}
         Note: runs Ollama on CPU, takes 1-3 minutes.
         """
-        from ai_agents.services.ollama_service import ollama_service
+        from ai_agents.services.ai_service import ai_service
         from cv_builder.models import CVVersion
 
         job = self.get_object()
@@ -496,7 +496,7 @@ Return ONLY this JSON object:
 }}"""
 
         try:
-            raw = ollama_service.generate(prompt=prompt, temperature=0.3, max_tokens=800)
+            raw = ai_service.generate(prompt=prompt, temperature=0.3, max_tokens=800)
             cleaned = re.sub(r'```(?:json)?\s*', '', raw).strip().rstrip('`').strip()
             match_obj = re.search(r'\{.*\}', cleaned, re.DOTALL)
             result = json.loads(match_obj.group()) if match_obj else {}
@@ -521,7 +521,7 @@ Return ONLY this JSON object:
         Body: {job_ids: [uuid, ...], cv_version_id (optional)}
         Returns: {batch_id, status, total_jobs, results}
         """
-        from ai_agents.services.ollama_service import ollama_service
+        from ai_agents.services.ai_service import ai_service
         from cv_builder.models import CVVersion
 
         job_ids = request.data.get('job_ids', [])
@@ -592,7 +592,7 @@ Return ONLY this JSON object:
   "cover_letter": "Dear Hiring Manager,\\n\\n[2-3 paragraph cover letter for {job.title} at {job.company}]\\n\\nSincerely,\\n[Candidate Name]"
 }}"""
 
-                raw = ollama_service.generate(prompt=prompt, temperature=0.3, max_tokens=800)
+                raw = ai_service.generate(prompt=prompt, temperature=0.3, max_tokens=800)
                 cleaned = re.sub(r'```(?:json)?\s*', '', raw).strip().rstrip('`').strip()
                 match_obj = re.search(r'\{.*\}', cleaned, re.DOTALL)
                 result_data = json.loads(match_obj.group()) if match_obj else {}

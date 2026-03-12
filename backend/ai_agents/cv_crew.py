@@ -178,7 +178,7 @@ class CVAnalysisCrew:
             "formatting_score": 0,
             "strengths": [],
             "weaknesses": ["Analysis could not be completed."],
-            "suggestions": ["Ensure Ollama is running: ollama serve"],
+            "suggestions": ["Check ANTHROPIC_API_KEY in .env"],
             "missing_keywords": [],
             "missing_sections": [],
         }
@@ -370,7 +370,7 @@ class CVTailoringCrew:
         return {
             "optimized_text": original_text,
             "keywords_added": [],
-            "changes_made": ["Tailoring could not be completed. Ensure Ollama is running."],
+            "changes_made": ["Tailoring could not be completed. Check ANTHROPIC_API_KEY in .env."],
             "match_percentage": 0,
             "ats_score": 0,
             "overall_score": 0,

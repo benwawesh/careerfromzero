@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from .services.ollama_service import ollama_service
+from .services.ai_service import ai_service
 from payments.decorators import require_tokens
 from payments.token_service import check_balance
 
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def _call_claude(system: str, user_message: str, max_tokens: int = 2048) -> str:
     """Helper to call Claude API."""
-    return ollama_service.chat(
+    return ai_service.chat(
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_message},
@@ -258,7 +258,7 @@ Be encouraging, specific, and practical. Give concrete next steps.
         messages.append({"role": "user", "content": message})
 
         try:
-            reply = ollama_service.chat(messages=messages, temperature=0.7, max_tokens=1000)
+            reply = ai_service.chat(messages=messages, temperature=0.7, max_tokens=1000)
             return Response({
                 'success': True,
                 'reply': reply,

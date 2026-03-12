@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 # Internal helpers                                                     #
 # ------------------------------------------------------------------ #
 
-def _call_ollama(prompt: str, temperature: float = 0.3) -> str:
-    """Call Ollama directly for tool use. Returns raw text."""
-    from .services import ollama_service
+def _call_ai(prompt: str, temperature: float = 0.3) -> str:
+    """Call Claude via ai_service for tool use. Returns raw text."""
+    from .services import ai_service
     try:
-        response = ollama_service.generate(prompt=prompt, temperature=temperature)
+        response = ai_service.generate(prompt=prompt, temperature=temperature)
         return response or ""
     except Exception as e:
-        logger.error(f"Ollama tool call failed: {e}", exc_info=True)
+        logger.error(f"AI tool call failed: {e}", exc_info=True)
         return ""
 
 
@@ -79,7 +79,7 @@ CV TEXT:
 
 Return ONLY the JSON object."""
 
-    result = _call_ollama(prompt, temperature=0.2)
+    result = _call_ai(prompt, temperature=0.2)
     logger.info("ATS Score Analyzer tool completed")
     return result or '{}'
 
@@ -121,7 +121,7 @@ JOB DESCRIPTION:
 
 Return ONLY the JSON object."""
 
-    result = _call_ollama(prompt, temperature=0.2)
+    result = _call_ai(prompt, temperature=0.2)
     logger.info("Job Requirements Extractor tool completed")
     return result or '{}'
 
@@ -170,7 +170,7 @@ ORIGINAL CV:
 
 Return ONLY the JSON object."""
 
-    result = _call_ollama(prompt, temperature=0.4)
+    result = _call_ai(prompt, temperature=0.4)
     logger.info("CV Tailor Writer tool completed")
     return result or '{}'
 
@@ -205,7 +205,7 @@ Original {section_name}:
 
 Return ONLY the improved section text — no JSON, no explanation, just the rewritten section."""
 
-    result = _call_ollama(prompt, temperature=0.5)
+    result = _call_ai(prompt, temperature=0.5)
     logger.info(f"CV Section Enhancer tool completed for: {section_name}")
     return result or section_content
 
@@ -248,6 +248,6 @@ CV SKILLS AND EXPERIENCE:
 
 Return ONLY the JSON object."""
 
-    result = _call_ollama(prompt, temperature=0.2)
+    result = _call_ai(prompt, temperature=0.2)
     logger.info("Skill Gap Mapper tool completed")
     return result or '{}'

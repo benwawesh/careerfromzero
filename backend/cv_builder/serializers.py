@@ -114,6 +114,7 @@ class CVAnalysisSerializer(serializers.ModelSerializer):
             'content_quality_score', 'formatting_score',
             'strengths', 'weaknesses', 'suggestions',
             'formatting_issues', 'missing_keywords', 'missing_sections',
+            'detailed_checks',
             'analysis_status', 'analysis_error', 'analyzed_at', 'updated_at'
         ]
         read_only_fields = ['id', 'cv_data', 'analysis_status', 'analysis_error', 'analyzed_at', 'updated_at']

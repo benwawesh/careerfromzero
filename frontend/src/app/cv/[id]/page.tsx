@@ -7,6 +7,7 @@ import ProtectedRoute from '@/components/ProtectedRoute'
 import { apiFetch } from '@/lib/apiFetch'
 
 type Tab = 'overview' | 'analysis' | 'tailor'
+type UUID = string
 
 interface CVData {
   email?: string
@@ -15,6 +16,7 @@ interface CVData {
   linkedin_url?: string
   github_url?: string
   summary?: string
+  raw_text?: string
   skills: string[]
   experience: { role: string; company: string; duration: string }[]
   education: { degree: string; institution: string; year: string }[]
@@ -22,6 +24,24 @@ interface CVData {
   certifications: string[]
   languages: string[]
   parsing_status: string
+}
+
+interface DetailedCheck {
+  name: string
+  status: 'pass' | 'fail'
+  issues: number
+  details: string
+}
+
+interface DetailedCategory {
+  score: number
+  checks: DetailedCheck[]
+}
+
+interface DetailedChecks {
+  content?: DetailedCategory
+  formatting?: DetailedCategory
+  keywords?: DetailedCategory
 }
 
 interface CVAnalysis {
@@ -36,10 +56,11 @@ interface CVAnalysis {
   missing_keywords: string[]
   missing_sections: string[]
   analysis_status: string
+  detailed_checks?: DetailedChecks
 }
 
 interface CVVersion {
-  id: number
+  id: UUID
   title: string
   version_type: string
   version_number: number
@@ -51,6 +72,7 @@ interface CVVersion {
   created_at: string
   description?: string
   optimization_target?: string
+  optimized_text?: string
 }
 
 interface CVVersionDetail {
@@ -74,7 +96,7 @@ interface CVVersionDetail {
 }
 
 interface CV {
-  id: number
+  id: UUID
   title: string
   original_filename: string
   file_type: string
@@ -102,6 +124,73 @@ const TAILOR_STEPS = [
   { agent: 'CV Writer Agent', action: 'Optimising keywords and impact statements…', icon: '🚀' },
   { agent: 'System', action: 'Saving tailored CV version…', icon: '✅' },
 ]
+
+// ── Full CV Document Preview ────────────────────────────────────────────────
+
+function CVFullPreview({ rawText }: { rawText: string }) {
+  const [expanded, setExpanded] = useState(false)
+
+  // Detect section headers: all-caps lines or lines ending with a colon
+  const SECTION_RE = /^(PROFESSIONAL SUMMARY|SUMMARY|OBJECTIVE|WORK EXPERIENCE|EXPERIENCE|EDUCATION|SKILLS|TECHNICAL SKILLS|PROJECTS|CERTIFICATIONS|LANGUAGES|ACHIEVEMENTS|AWARDS|PUBLICATIONS|REFERENCES|VOLUNTEER|INTERESTS|PROFILE)[\s:]*$/i
+
+  const lines = rawText.split('\n')
+  const previewLines = expanded ? lines : lines.slice(0, 40)
+
+  return (
+    <div className="bg-white rounded-xl shadow-md overflow-hidden">
+      <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-gray-900">Full CV Document</h2>
+        <button
+          onClick={() => setExpanded(v => !v)}
+          className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+        >
+          {expanded ? 'Show less ▲' : 'Show full CV ▼'}
+        </button>
+      </div>
+
+      {/* A4-like white paper look */}
+      <div className="bg-gray-100 p-4">
+        <div className="bg-white shadow-md rounded max-w-3xl mx-auto p-8 font-serif text-[13px] leading-relaxed text-gray-800">
+          {previewLines.map((line, i) => {
+            const trimmed = line.trim()
+            if (!trimmed) return <div key={i} className="h-3" />
+
+            if (SECTION_RE.test(trimmed)) {
+              return (
+                <div key={i} className="mt-5 mb-1">
+                  <h3 className="font-sans font-bold text-[11px] uppercase tracking-widest text-blue-800 border-b border-blue-200 pb-1">
+                    {trimmed.replace(/:$/, '')}
+                  </h3>
+                </div>
+              )
+            }
+
+            if (trimmed.startsWith('-') || trimmed.startsWith('•') || trimmed.startsWith('–')) {
+              return (
+                <p key={i} className="ml-4 before:content-['•'] before:mr-2 before:text-gray-400">
+                  {trimmed.replace(/^[-•–]\s*/, '')}
+                </p>
+              )
+            }
+
+            return <p key={i}>{trimmed}</p>
+          })}
+
+          {!expanded && lines.length > 40 && (
+            <div className="text-center mt-4">
+              <button
+                onClick={() => setExpanded(true)}
+                className="text-sm text-blue-600 hover:underline font-sans"
+              >
+                + {lines.length - 40} more lines — click to expand
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function CVDetailPage() {
   return (
@@ -135,7 +224,7 @@ function CVDetail() {
   // Version viewing state
   const [viewingVersion, setViewingVersion] = useState<CVVersionDetail | null>(null)
   const [loadingVersion, setLoadingVersion] = useState(false)
-  const [downloadingPDF, setDownloadingPDF] = useState<number | null>(null)
+  const [downloadingPDF, setDownloadingPDF] = useState<UUID | null>(null)
 
   const [error, setError] = useState('')
 
@@ -264,22 +353,22 @@ function CVDetail() {
 
       const prevVersionCount = cv?.versions?.length ?? 0
 
-      // Advance step display every ~90 seconds (5 steps × 90s ≈ 7 min visible progress)
+      // Advance step display every 20 seconds (5 steps × 20s ≈ visible progress during ~60s AI call)
       let step = 0
       stepRef.current = setInterval(() => {
         step = Math.min(step + 1, TAILOR_STEPS.length - 1)
         setTailorStep(step)
-      }, 90000)
+      }, 20000)
 
-      // Poll until a new version appears (max 25 minutes for 3-agent crew on CPU)
+      // Poll until a new version appears (max 5 minutes)
       let tailorPollCount = 0
       pollRef.current = setInterval(async () => {
         tailorPollCount++
-        if (tailorPollCount > 375) { // 375 × 4s = 25 min
+        if (tailorPollCount > 75) { // 75 × 4s = 5 min
           clearInterval(pollRef.current!)
           clearInterval(stepRef.current!)
           setTailorRunning(false)
-          setError('Tailoring timed out. Check that Ollama is running (ollama serve).')
+          setError('Tailoring timed out. Please try again.')
           return
         }
         const poll = await apiFetch(`/api/cv/${id}/`)
@@ -303,7 +392,7 @@ function CVDetail() {
 
   // ── Version Viewing & Download ─────────────────────────────────────
 
-  const viewVersion = async (versionId: number) => {
+  const viewVersion = async (versionId: UUID) => {
     setLoadingVersion(true)
     setError('')
     try {
@@ -330,7 +419,7 @@ function CVDetail() {
     }
   }
 
-  const downloadPDF = async (versionId: number) => {
+  const downloadPDF = async (versionId: UUID) => {
     setDownloadingPDF(versionId)
     try {
       // Use apiFetch to get automatic token refresh
@@ -444,6 +533,26 @@ function CVDetail() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <a
+                href={`/api/cv/${id}/download-original/`}
+                onClick={async (e) => {
+                  e.preventDefault()
+                  const res = await apiFetch(`/api/cv/${id}/download-original/`)
+                  if (!res.ok) { setError('Download failed'); return }
+                  const blob = await res.blob()
+                  const url = window.URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = cv.original_filename || 'cv'
+                  document.body.appendChild(a)
+                  a.click()
+                  window.URL.revokeObjectURL(url)
+                  document.body.removeChild(a)
+                }}
+                className="px-4 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 flex items-center gap-1"
+              >
+                📥 Download Original
+              </a>
               {cv.is_parsed && !analysisRunning && (
                 <button
                   onClick={startAnalysis}
@@ -586,6 +695,43 @@ function CVDetail() {
                     </div>
                   )}
                 </div>
+
+                {/* Tailored versions quick-access */}
+                {cv.versions?.length > 0 && (
+                  <div className="bg-white rounded-xl shadow-md p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4">Tailored Versions ({cv.versions.length})</h2>
+                    <div className="space-y-3">
+                      {cv.versions.map((v) => (
+                        <div key={v.id} className="flex items-center justify-between p-3 border border-gray-100 rounded-lg">
+                          <div>
+                            <p className="font-medium text-sm text-gray-900">{v.title}</p>
+                            <p className="text-xs text-gray-500">Version {v.version_number} · {v.version_type === 'job_tailored' ? 'Job Tailored' : 'ATS Optimised'}</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => viewVersion(v.id)}
+                              className="text-sm px-3 py-1.5 border border-blue-300 text-blue-600 rounded-lg hover:bg-blue-50"
+                            >
+                              View
+                            </button>
+                            <button
+                              onClick={() => downloadPDF(v.id)}
+                              disabled={downloadingPDF === v.id}
+                              className="text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
+                            >
+                              {downloadingPDF === v.id ? '⏳' : '📥'} PDF
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Full CV text preview */}
+                {cv.data.raw_text && (
+                  <CVFullPreview rawText={cv.data.raw_text} />
+                )}
               </>
             ) : null}
           </div>
@@ -645,6 +791,60 @@ function CVDetail() {
                     <ScoreRing score={analysis.formatting_score} label="Formatting" color="border-orange-500" />
                   </div>
                 </div>
+
+                {/* Detailed itemized checks */}
+                {analysis.detailed_checks && Object.keys(analysis.detailed_checks).length > 0 && (
+                  <div className="bg-white rounded-xl shadow-md p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-5">Detailed Checks</h2>
+                    <div className="space-y-6">
+                      {(['content', 'formatting', 'keywords'] as const).map((cat) => {
+                        const category = analysis.detailed_checks?.[cat]
+                        if (!category) return null
+                        const catLabel = cat === 'content' ? 'CONTENT' : cat === 'formatting' ? 'FORMATTING' : 'KEYWORDS'
+                        const catColor = cat === 'content' ? 'text-green-700 bg-green-50 border-green-200' : cat === 'formatting' ? 'text-orange-700 bg-orange-50 border-orange-200' : 'text-blue-700 bg-blue-50 border-blue-200'
+                        const barColor = cat === 'content' ? 'bg-green-500' : cat === 'formatting' ? 'bg-orange-500' : 'bg-blue-500'
+                        return (
+                          <div key={cat}>
+                            <div className={`flex items-center justify-between px-4 py-2 rounded-lg border mb-2 ${catColor}`}>
+                              <span className="font-semibold text-sm tracking-wide">{catLabel}</span>
+                              <div className="flex items-center gap-2">
+                                <div className="w-24 h-2 bg-gray-200 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${barColor}`} style={{ width: `${category.score}%` }} />
+                                </div>
+                                <span className="text-sm font-bold">{category.score}%</span>
+                              </div>
+                            </div>
+                            <div className="divide-y divide-gray-100 border border-gray-100 rounded-lg overflow-hidden">
+                              {category.checks.map((check, i) => (
+                                <div key={i} className="flex items-start gap-3 px-4 py-3 bg-white hover:bg-gray-50 transition-colors">
+                                  <span className={`mt-0.5 flex-shrink-0 text-base ${check.status === 'pass' ? 'text-green-500' : 'text-red-500'}`}>
+                                    {check.status === 'pass' ? '✓' : '✗'}
+                                  </span>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-sm font-medium text-gray-900">{check.name}</span>
+                                      {check.status === 'fail' && check.issues > 0 && (
+                                        <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">
+                                          {check.issues} {check.issues === 1 ? 'issue' : 'issues'}
+                                        </span>
+                                      )}
+                                      {check.status === 'pass' && (
+                                        <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full">No issues</span>
+                                      )}
+                                    </div>
+                                    {check.details && (
+                                      <p className="text-xs text-gray-500 mt-0.5">{check.details}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid md:grid-cols-2 gap-6">
                   <div className="bg-white rounded-xl shadow-md p-6">
@@ -876,148 +1076,49 @@ function CVDetail() {
 
               {/* Modal Content */}
               <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                {/* Contact Info */}
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-                  {viewingVersion.cv_data.email && (
-                    <div><span className="text-gray-500">Email: </span><span className="font-medium">{viewingVersion.cv_data.email}</span></div>
-                  )}
-                  {viewingVersion.cv_data.phone && (
-                    <div><span className="text-gray-500">Phone: </span><span className="font-medium">{viewingVersion.cv_data.phone}</span></div>
-                  )}
-                  {viewingVersion.cv_data.location && (
-                    <div><span className="text-gray-500">Location: </span><span className="font-medium">{viewingVersion.cv_data.location}</span></div>
-                  )}
-                  {viewingVersion.cv_data.linkedin_url && (
-                    <div><span className="text-gray-500">LinkedIn: </span><a href={viewingVersion.cv_data.linkedin_url} className="text-blue-600 hover:underline">Profile</a></div>
-                  )}
-                  {viewingVersion.cv_data.github_url && (
-                    <div><span className="text-gray-500">GitHub: </span><a href={viewingVersion.cv_data.github_url} className="text-blue-600 hover:underline">Profile</a></div>
-                  )}
-                </div>
 
                 {/* Scores */}
                 {(viewingVersion.version.ats_score || viewingVersion.version.overall_score) && (
-                  <div className="flex gap-6 p-4 bg-blue-50 rounded-lg">
+                  <div className="flex gap-6 p-4 bg-blue-50 rounded-xl">
                     {viewingVersion.version.ats_score && (
-                      <div>
-                        <p className="text-xs text-gray-500">ATS Score</p>
-                        <p className="text-2xl font-bold text-blue-600">{viewingVersion.version.ats_score}</p>
+                      <div className="text-center">
+                        <p className="text-xs text-gray-500 mb-1">ATS Score</p>
+                        <p className="text-3xl font-bold text-blue-600">{viewingVersion.version.ats_score}</p>
                       </div>
                     )}
                     {viewingVersion.version.overall_score && (
-                      <div>
-                        <p className="text-xs text-gray-500">Overall Score</p>
-                        <p className="text-2xl font-bold text-purple-600">{viewingVersion.version.overall_score}</p>
+                      <div className="text-center">
+                        <p className="text-xs text-gray-500 mb-1">Overall Score</p>
+                        <p className="text-3xl font-bold text-purple-600">{viewingVersion.version.overall_score}</p>
+                      </div>
+                    )}
+                    {viewingVersion.version.optimization_target && (
+                      <div className="ml-auto text-right">
+                        <p className="text-xs text-gray-500 mb-1">Tailored for</p>
+                        <p className="text-sm font-semibold text-gray-700">{viewingVersion.version.optimization_target}</p>
                       </div>
                     )}
                   </div>
                 )}
 
-                {/* Summary */}
-                {viewingVersion.cv_data.summary && (
+                {/* Claude's full rewritten CV — displayed exactly as written */}
+                {viewingVersion.version.optimized_text && (
                   <div>
-                    <h3 className="font-semibold text-gray-900 mb-2">Professional Summary</h3>
-                    <p className="text-gray-700">{viewingVersion.cv_data.summary}</p>
+                    <h3 className="font-semibold text-gray-700 text-sm uppercase tracking-wide mb-3">AI-Tailored CV</h3>
+                    <pre className="whitespace-pre-wrap font-sans text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-xl p-6 leading-relaxed">
+                      {viewingVersion.version.optimized_text}
+                    </pre>
                   </div>
                 )}
-
-                {/* Skills */}
-                {viewingVersion.cv_data.skills?.length > 0 && (
-                  <div>
-                    <h3 className="font-semibold text-gray-900 mb-3">Skills</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {viewingVersion.cv_data.skills.map((s, i) => (
-                        <span key={i} className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-sm">{s}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Experience */}
-                {viewingVersion.cv_data.experience?.length > 0 && (
-                  <div>
-                    <h3 className="font-semibold text-gray-900 mb-3">Experience</h3>
-                    <div className="space-y-4">
-                      {viewingVersion.cv_data.experience.map((exp, i) => (
-                        <div key={i} className="border-l-2 border-blue-200 pl-4">
-                          <p className="font-semibold text-gray-900">{exp.role}</p>
-                          <p className="text-blue-600 text-sm">{exp.company}</p>
-                          <p className="text-sm text-gray-500">{exp.duration}</p>
-                          {exp.description && <p className="text-sm text-gray-700 mt-1">{exp.description}</p>}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Education */}
-                {viewingVersion.cv_data.education?.length > 0 && (
-                  <div>
-                    <h3 className="font-semibold text-gray-900 mb-3">Education</h3>
-                    <div className="space-y-4">
-                      {viewingVersion.cv_data.education.map((edu, i) => (
-                        <div key={i} className="border-l-2 border-purple-200 pl-4">
-                          <p className="font-semibold text-gray-900">{edu.degree}</p>
-                          <p className="text-purple-600 text-sm">{edu.institution}</p>
-                          <p className="text-sm text-gray-500">{edu.year}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Projects */}
-                {viewingVersion.cv_data.projects?.length > 0 && (
-                  <div>
-                    <h3 className="font-semibold text-gray-900 mb-3">Projects</h3>
-                    <div className="space-y-4">
-                      {viewingVersion.cv_data.projects.map((proj, i) => (
-                        <div key={i} className="p-4 bg-gray-50 rounded-lg">
-                          <p className="font-semibold text-gray-900">{proj.name}</p>
-                          <p className="text-sm text-gray-700 mt-1">{proj.description}</p>
-                          {proj.technologies && (
-                            <p className="text-xs text-gray-500 mt-2">Technologies: {proj.technologies}</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Certifications & Languages */}
-                <div className="grid md:grid-cols-2 gap-6">
-                  {viewingVersion.cv_data.certifications?.length > 0 && (
-                    <div>
-                      <h3 className="font-semibold text-gray-900 mb-2">Certifications</h3>
-                      <ul className="space-y-2">
-                        {viewingVersion.cv_data.certifications.map((c, i) => (
-                          <li key={i} className="text-sm text-gray-700 flex items-center gap-2">
-                            <span className="text-green-500">✓</span>{c}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {viewingVersion.cv_data.languages?.length > 0 && (
-                    <div>
-                      <h3 className="font-semibold text-gray-900 mb-2">Languages</h3>
-                      <div className="flex flex-wrap gap-2">
-                        {viewingVersion.cv_data.languages.map((l, i) => (
-                          <span key={i} className="bg-green-50 text-green-700 px-3 py-1 rounded-full text-sm">{l}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
 
                 {/* Changes Made */}
-                {viewingVersion.version.changes_made && viewingVersion.version.changes_made.length > 0 && (
-                  <div className="p-4 bg-yellow-50 rounded-lg">
-                    <h3 className="font-semibold text-gray-900 mb-2">Changes Made in This Version</h3>
-                    <ul className="space-y-1">
-                      {viewingVersion.version.changes_made.map((change, i) => (
+                {(viewingVersion.version.changes_made?.length ?? 0) > 0 && (
+                  <div className="p-4 bg-yellow-50 rounded-xl border border-yellow-100">
+                    <h3 className="font-semibold text-gray-900 mb-3">What Claude Changed</h3>
+                    <ul className="space-y-2">
+                      {viewingVersion.version.changes_made!.map((change, i) => (
                         <li key={i} className="text-sm text-gray-700 flex items-start gap-2">
-                          <span className="text-yellow-600">→</span>{change}
+                          <span className="text-yellow-600 mt-0.5 flex-shrink-0">→</span>{change}
                         </li>
                       ))}
                     </ul>
@@ -1025,12 +1126,12 @@ function CVDetail() {
                 )}
 
                 {/* Keywords Added */}
-                {viewingVersion.version.keywords_added && viewingVersion.version.keywords_added.length > 0 && (
-                  <div className="p-4 bg-green-50 rounded-lg">
-                    <h3 className="font-semibold text-gray-900 mb-2">Keywords Added</h3>
+                {(viewingVersion.version.keywords_added?.length ?? 0) > 0 && (
+                  <div className="p-4 bg-green-50 rounded-xl border border-green-100">
+                    <h3 className="font-semibold text-gray-900 mb-3">Keywords Added for This Job</h3>
                     <div className="flex flex-wrap gap-2">
-                      {viewingVersion.version.keywords_added.map((k, i) => (
-                        <span key={i} className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm">{k}</span>
+                      {viewingVersion.version.keywords_added!.map((k, i) => (
+                        <span key={i} className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">{k}</span>
                       ))}
                     </div>
                   </div>

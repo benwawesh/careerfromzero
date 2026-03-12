@@ -32,16 +32,48 @@ class CVAgent(BaseCVAgent):
 Analyze the following CV and return ONLY a valid JSON object with this exact structure:
 
 {{
-  "ats_score": <integer 0-100, how ATS-friendly the CV is>,
-  "overall_score": <integer 0-100, overall CV quality>,
-  "content_quality_score": <integer 0-100, quality of content and achievements>,
-  "formatting_score": <integer 0-100, structure and formatting quality>,
+  "ats_score": <integer 0-100>,
+  "overall_score": <integer 0-100>,
+  "content_quality_score": <integer 0-100>,
+  "formatting_score": <integer 0-100>,
   "strengths": ["strength 1", "strength 2", "strength 3"],
-  "weaknesses": ["weakness 1", "weakness 2", "weakness 3"],
+  "weaknesses": ["weakness 1", "weakness 2"],
   "suggestions": ["actionable suggestion 1", "actionable suggestion 2", "actionable suggestion 3"],
-  "formatting_issues": ["formatting issue 1", "formatting issue 2"],
-  "missing_keywords": ["important keyword 1", "important keyword 2", "important keyword 3"],
-  "missing_sections": ["missing section 1"]
+  "formatting_issues": ["issue 1"],
+  "missing_keywords": ["keyword 1", "keyword 2"],
+  "missing_sections": ["section 1"],
+  "detailed_checks": {{
+    "content": {{
+      "score": <integer 0-100>,
+      "checks": [
+        {{"name": "ATS Parse Rate", "status": "pass", "issues": 0, "details": "Resume parsed successfully by ATS systems"}},
+        {{"name": "Quantifying Impact", "status": "<pass|fail>", "issues": <count>, "details": "<specific detail about numbers/metrics used or missing>"}},
+        {{"name": "Repetition", "status": "<pass|fail>", "issues": <count>, "details": "<describe any repeated phrases or words>"}},
+        {{"name": "Spelling & Grammar", "status": "<pass|fail>", "issues": <count>, "details": "<describe any spelling or grammar issues found>"}},
+        {{"name": "Action Verbs", "status": "<pass|fail>", "issues": <count>, "details": "<describe use of strong action verbs>"}},
+        {{"name": "Bullet Point Length", "status": "<pass|fail>", "issues": <count>, "details": "<are bullet points concise, under 2 lines?>"}},
+        {{"name": "Achievements vs Duties", "status": "<pass|fail>", "issues": <count>, "details": "<does CV show achievements or just list duties?>"}}
+      ]
+    }},
+    "formatting": {{
+      "score": <integer 0-100>,
+      "checks": [
+        {{"name": "Contact Information", "status": "<pass|fail>", "issues": <count>, "details": "<is name, email, phone, location present?>"}},
+        {{"name": "Section Headers", "status": "<pass|fail>", "issues": <count>, "details": "<are sections clearly labeled?>"}},
+        {{"name": "CV Length", "status": "<pass|fail>", "issues": <count>, "details": "<is length appropriate for experience level?>"}},
+        {{"name": "Consistent Formatting", "status": "<pass|fail>", "issues": <count>, "details": "<consistent dates, fonts, spacing?>"}},
+        {{"name": "Reverse Chronological Order", "status": "<pass|fail>", "issues": <count>, "details": "<is experience listed newest first?>"}}
+      ]
+    }},
+    "keywords": {{
+      "score": <integer 0-100>,
+      "checks": [
+        {{"name": "Industry Keywords", "status": "<pass|fail>", "issues": <count>, "details": "<list specific missing industry keywords>"}},
+        {{"name": "Skills Section", "status": "<pass|fail>", "issues": <count>, "details": "<is there a dedicated skills section?>"}},
+        {{"name": "Job Title Alignment", "status": "<pass|fail>", "issues": <count>, "details": "<does the CV title/summary match industry standards?>"}}
+      ]
+    }}
+  }}
 }}
 
 CV TEXT:
@@ -173,10 +205,11 @@ Return ONLY the JSON object."""
             "formatting_score": 0,
             "strengths": [],
             "weaknesses": ["Analysis could not be completed. Please try again."],
-            "suggestions": ["Ensure Ollama is running and the model is available."],
+            "suggestions": ["Check your API key and try again."],
             "formatting_issues": [],
             "missing_keywords": [],
             "missing_sections": [],
+            "detailed_checks": {},
         }
 
     def _default_tailor(self, original_text: str) -> dict:

@@ -11,7 +11,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('cv_builder', '0001_initial'),
+        ('cv_builder', '0002_schema_with_uuid'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

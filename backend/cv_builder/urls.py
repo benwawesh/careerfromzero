@@ -16,7 +16,10 @@ from .views import (
     match_cv_to_job,
     optimize_cv,
     download_cv_version_pdf,
-    view_cv_version
+    download_original_cv,
+    view_cv_version,
+    enhance_cv_sections,
+    create_manual_cv,
 )
 
 router = DefaultRouter()
@@ -26,6 +29,10 @@ router.register(r'jobs', JobDescriptionViewSet, basename='jobdescription')
 app_name = 'cv_builder'
 
 urlpatterns = [
+    # CV Builder (manual entry)
+    path('builder/enhance/', enhance_cv_sections, name='builder_enhance'),
+    path('create-manual/', create_manual_cv, name='create_manual'),
+
     # CV upload
     path('upload/', CVUploadView.as_view(), name='upload'),
     
@@ -44,6 +51,9 @@ urlpatterns = [
     path('<uuid:cv_id>/optimize/', optimize_cv, name='optimize'),
     path('<uuid:cv_id>/optimize/<int:job_id>/', optimize_cv, name='optimize_for_job'),
     
+    # Original file download
+    path('<uuid:cv_id>/download-original/', download_original_cv, name='download_original'),
+
     # CV Version operations (must come before ViewSet routes)
     path('<uuid:cv_id>/versions/<int:version_id>/download/', download_cv_version_pdf, name='download_version_pdf'),
     path('<uuid:cv_id>/versions/<int:version_id>/', view_cv_version, name='view_version'),

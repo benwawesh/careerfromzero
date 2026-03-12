@@ -22,6 +22,7 @@ class CV(models.Model):
     """
     Main CV model for storing uploaded CV files
     """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         User, 
         on_delete=models.CASCADE, 
@@ -224,6 +225,12 @@ class CVAnalysis(models.Model):
         help_text="Important sections missing from CV"
     )
     
+    # Detailed itemized checks (ATS Parse Rate, Repetition, Spelling, etc.)
+    detailed_checks = models.JSONField(
+        default=dict,
+        help_text="Itemized check results grouped by category"
+    )
+
     # Analysis metadata
     analysis_status = models.CharField(
         max_length=20,

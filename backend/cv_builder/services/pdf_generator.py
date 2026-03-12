@@ -7,10 +7,9 @@ from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 import io
+import re
 import logging
 
 logger = logging.getLogger(__name__)
@@ -18,73 +17,65 @@ logger = logging.getLogger(__name__)
 
 class CVPDFGenerator:
     """Generate PDF from CV version text"""
-    
+
     def __init__(self, cv_version):
         self.cv_version = cv_version
         self.cv_data = cv_version.cv.data
         self.styles = getSampleStyleSheet()
         self._setup_custom_styles()
-    
+
     def _setup_custom_styles(self):
-        """Setup custom styles for CV"""
-        # Title style
         self.styles.add(ParagraphStyle(
-            name='CVTitle',
-            parent=self.styles['Heading1'],
-            fontSize=18,
-            spaceAfter=20,
+            name='CVName',
+            parent=self.styles['Normal'],
+            fontSize=22,
+            spaceAfter=4,
+            fontName='Helvetica-Bold',
             textColor=colors.HexColor('#1e3a8a'),
-            alignment=1,  # Center
+            alignment=1,
         ))
-        
-        # Section heading style
+        self.styles.add(ParagraphStyle(
+            name='CVContact',
+            parent=self.styles['Normal'],
+            fontSize=9,
+            spaceAfter=12,
+            textColor=colors.HexColor('#4b5563'),
+            alignment=1,
+        ))
         self.styles.add(ParagraphStyle(
             name='SectionHeading',
-            parent=self.styles['Heading2'],
-            fontSize=14,
-            spaceBefore=12,
-            spaceAfter=8,
+            parent=self.styles['Normal'],
+            fontSize=11,
+            spaceBefore=14,
+            spaceAfter=4,
+            fontName='Helvetica-Bold',
             textColor=colors.HexColor('#1e40af'),
-            borderWidth=1,
-            borderColor=colors.HexColor('#3b82f6'),
-            borderPadding=5,
         ))
-        
-        # Normal text style
         self.styles.add(ParagraphStyle(
             name='CVBody',
             parent=self.styles['Normal'],
             fontSize=10,
-            spaceAfter=6,
-            leading=14,
+            spaceAfter=4,
+            leading=15,
         ))
-        
-        # Bullet style (use unique name to avoid conflict with ReportLab's default)
         self.styles.add(ParagraphStyle(
             name='CVBullet',
             parent=self.styles['Normal'],
             fontSize=10,
-            leftIndent=20,
-            spaceAfter=4,
+            leftIndent=16,
+            spaceAfter=3,
             leading=14,
         ))
-        
-        # Subheading style
         self.styles.add(ParagraphStyle(
-            name='Subheading',
+            name='CVSubheading',
             parent=self.styles['Normal'],
-            fontSize=11,
-            spaceBefore=8,
-            spaceAfter=4,
+            fontSize=10,
+            spaceAfter=2,
             fontName='Helvetica-Bold',
-            leading=14,
         ))
-    
+
     def generate_pdf(self):
-        """Generate PDF from CV version"""
         buffer = io.BytesIO()
-        
-        # Create PDF document
         doc = SimpleDocTemplate(
             buffer,
             pagesize=LETTER,
@@ -93,157 +84,171 @@ class CVPDFGenerator:
             topMargin=0.75 * inch,
             bottomMargin=0.75 * inch,
         )
-        
-        # Build story (content elements)
+
         story = []
-        
-        # Add header section
         self._add_header(story)
-        story.append(Spacer(1, 20))
-        
-        # Add summary if available
-        if self.cv_data.summary:
-            self._add_section(story, 'Professional Summary', self.cv_data.summary)
-        
-        # Add experience
-        if self.cv_data.experience:
-            self._add_experience(story)
-        
-        # Add education
-        if self.cv_data.education:
-            self._add_education(story)
-        
-        # Add skills
-        if self.cv_data.skills:
-            self._add_skills(story)
-        
-        # Add projects
-        if self.cv_data.projects:
-            self._add_projects(story)
-        
-        # Add certifications
-        if self.cv_data.certifications:
-            self._add_certifications(story)
-        
-        # Add languages
-        if self.cv_data.languages:
-            self._add_languages(story)
-        
-        # Build PDF
+
+        optimized = self.cv_version.optimized_text
+        if optimized and len(optimized.strip()) > 50:
+            self._render_optimized_text(story, optimized)
+        else:
+            # Fallback: render from structured cv_data fields
+            self._render_from_cv_data(story)
+
         doc.build(story)
-        
-        # Get PDF bytes
         pdf_bytes = buffer.getvalue()
         buffer.close()
-        
         return pdf_bytes
-    
+
+    # ------------------------------------------------------------------ #
+    #  Header — always from cv_data contact fields                        #
+    # ------------------------------------------------------------------ #
+
     def _add_header(self, story):
-        """Add CV header with contact info"""
-        # Name/Title
-        name = f"<b>{self.cv_version.cv.title}</b>"
-        story.append(Paragraph(name, self.styles['CVTitle']))
-        
-        # Contact information
-        contact_lines = []
-        if self.cv_data.email:
-            contact_lines.append(f"📧 {self.cv_data.email}")
-        if self.cv_data.phone:
-            contact_lines.append(f"📱 {self.cv_data.phone}")
-        if self.cv_data.location:
-            contact_lines.append(f"📍 {self.cv_data.location}")
-        if self.cv_data.linkedin_url:
-            contact_lines.append(f"💼 LinkedIn")
-        if self.cv_data.github_url:
-            contact_lines.append(f"💻 GitHub")
-        
-        if contact_lines:
-            contact_text = " | ".join(contact_lines)
-            story.append(Paragraph(contact_text, self.styles['CVBody']))
-    
-    def _add_section(self, story, title, content):
-        """Add a section with title and content"""
-        story.append(Spacer(1, 12))
+        name = self.cv_version.cv.title or "Curriculum Vitae"
+        story.append(Paragraph(self._esc(name), self.styles['CVName']))
+
+        parts = []
+        if self.cv_data and self.cv_data.email:
+            parts.append(self.cv_data.email)
+        if self.cv_data and self.cv_data.phone:
+            parts.append(self.cv_data.phone)
+        if self.cv_data and self.cv_data.location:
+            parts.append(self.cv_data.location)
+        if self.cv_data and self.cv_data.linkedin_url:
+            parts.append("LinkedIn")
+        if self.cv_data and self.cv_data.github_url:
+            parts.append("GitHub")
+
+        if parts:
+            story.append(Paragraph(" · ".join(self._esc(p) for p in parts), self.styles['CVContact']))
+
+        story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#1e40af'), spaceAfter=6))
+
+    # ------------------------------------------------------------------ #
+    #  Render Claude's optimized_text                                     #
+    # ------------------------------------------------------------------ #
+
+    # All-caps section header patterns Claude uses
+    SECTION_RE = re.compile(
+        r'^(PROFESSIONAL SUMMARY|SUMMARY|OBJECTIVE|WORK EXPERIENCE|EXPERIENCE|'
+        r'EDUCATION|SKILLS|TECHNICAL SKILLS|PROJECTS|CERTIFICATIONS|LANGUAGES|'
+        r'ACHIEVEMENTS|AWARDS|PUBLICATIONS|REFERENCES|VOLUNTEER|INTERESTS|PROFILE)\s*$',
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    def _render_optimized_text(self, story, text):
+        """
+        Parse Claude's plain-text CV and render with proper styles.
+        Sections are detected by ALL-CAPS lines; bullets by leading - or •.
+        """
+        lines = text.splitlines()
+        i = 0
+        in_section = False
+
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Blank line → small gap
+            if not stripped:
+                story.append(Spacer(1, 4))
+                i += 1
+                continue
+
+            # Section header detection: all-caps, optional trailing colon
+            clean = stripped.rstrip(':')
+            if self.SECTION_RE.match(clean):
+                story.append(Paragraph(self._esc(clean.upper()), self.styles['SectionHeading']))
+                story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#93c5fd'), spaceAfter=4))
+                in_section = True
+                i += 1
+                continue
+
+            # Bullet lines
+            if stripped.startswith(('-', '•', '*', '–')):
+                bullet_text = stripped.lstrip('-•*– ').strip()
+                story.append(Paragraph(f"• {self._esc(bullet_text)}", self.styles['CVBullet']))
+                i += 1
+                continue
+
+            # Bold subheading heuristic: short line that looks like "Job Title | Company | Year"
+            # or lines with bold markers **text**
+            if stripped.startswith('**') and stripped.endswith('**'):
+                inner = stripped.strip('*').strip()
+                story.append(Paragraph(f"<b>{self._esc(inner)}</b>", self.styles['CVSubheading']))
+                i += 1
+                continue
+
+            # Regular paragraph line
+            story.append(Paragraph(self._esc(stripped), self.styles['CVBody']))
+            i += 1
+
+    # ------------------------------------------------------------------ #
+    #  Fallback: render from structured cv_data                          #
+    # ------------------------------------------------------------------ #
+
+    def _render_from_cv_data(self, story):
+        if not self.cv_data:
+            story.append(Paragraph("No CV content available.", self.styles['CVBody']))
+            return
+
+        if self.cv_data.summary:
+            self._section(story, "PROFESSIONAL SUMMARY")
+            story.append(Paragraph(self._esc(self.cv_data.summary), self.styles['CVBody']))
+
+        if self.cv_data.experience:
+            self._section(story, "WORK EXPERIENCE")
+            for exp in self.cv_data.experience:
+                role = exp.get('role', '')
+                company = exp.get('company', '')
+                duration = exp.get('duration', '')
+                story.append(Paragraph(f"<b>{self._esc(role)}</b>", self.styles['CVSubheading']))
+                story.append(Paragraph(self._esc(f"{company}  |  {duration}"), self.styles['CVBody']))
+                if exp.get('description'):
+                    story.append(Paragraph(self._esc(exp['description']), self.styles['CVBody']))
+                story.append(Spacer(1, 6))
+
+        if self.cv_data.education:
+            self._section(story, "EDUCATION")
+            for edu in self.cv_data.education:
+                story.append(Paragraph(f"<b>{self._esc(edu.get('degree', ''))}</b>", self.styles['CVSubheading']))
+                story.append(Paragraph(self._esc(f"{edu.get('institution', '')}  |  {edu.get('year', '')}"), self.styles['CVBody']))
+                story.append(Spacer(1, 6))
+
+        if self.cv_data.skills:
+            self._section(story, "SKILLS")
+            if isinstance(self.cv_data.skills, list):
+                story.append(Paragraph(self._esc(", ".join(self.cv_data.skills)), self.styles['CVBody']))
+
+        if self.cv_data.projects:
+            self._section(story, "PROJECTS")
+            for proj in self.cv_data.projects:
+                story.append(Paragraph(f"<b>{self._esc(proj.get('name', ''))}</b>", self.styles['CVSubheading']))
+                if proj.get('description'):
+                    story.append(Paragraph(self._esc(proj['description']), self.styles['CVBody']))
+                story.append(Spacer(1, 6))
+
+        if self.cv_data.certifications:
+            self._section(story, "CERTIFICATIONS")
+            for cert in self.cv_data.certifications:
+                story.append(Paragraph(f"• {self._esc(cert)}", self.styles['CVBullet']))
+
+        if self.cv_data.languages:
+            self._section(story, "LANGUAGES")
+            story.append(Paragraph(self._esc(", ".join(self.cv_data.languages)), self.styles['CVBody']))
+
+    def _section(self, story, title):
         story.append(Paragraph(title, self.styles['SectionHeading']))
-        
-        # Split content into paragraphs
-        paragraphs = content.split('\n\n')
-        for para in paragraphs:
-            if para.strip():
-                story.append(Paragraph(para.strip(), self.styles['CVBody']))
-    
-    def _add_experience(self, story):
-        """Add experience section"""
-        story.append(Spacer(1, 12))
-        story.append(Paragraph("Work Experience", self.styles['SectionHeading']))
-        
-        for exp in self.cv_data.experience:
-            # Role and company
-            role_line = f"<b>{exp.get('role', '')}</b>"
-            company_line = f"{exp.get('company', '')} | {exp.get('duration', '')}"
-            
-            story.append(Paragraph(role_line, self.styles['Subheading']))
-            story.append(Paragraph(company_line, self.styles['CVBody']))
-            
-            # Description if available
-            if exp.get('description'):
-                story.append(Paragraph(exp['description'], self.styles['CVBody']))
-            
-            story.append(Spacer(1, 8))
-    
-    def _add_education(self, story):
-        """Add education section"""
-        story.append(Spacer(1, 12))
-        story.append(Paragraph("Education", self.styles['SectionHeading']))
-        
-        for edu in self.cv_data.education:
-            degree_line = f"<b>{edu.get('degree', '')}</b>"
-            school_line = f"{edu.get('institution', '')} | {edu.get('year', '')}"
-            
-            story.append(Paragraph(degree_line, self.styles['Subheading']))
-            story.append(Paragraph(school_line, self.styles['CVBody']))
-            story.append(Spacer(1, 8))
-    
-    def _add_skills(self, story):
-        """Add skills section"""
-        story.append(Spacer(1, 12))
-        story.append(Paragraph("Skills", self.styles['SectionHeading']))
-        
-        # Group skills by category if available, otherwise list all
-        if isinstance(self.cv_data.skills, list):
-            skills_text = ", ".join(self.cv_data.skills)
-            story.append(Paragraph(skills_text, self.styles['CVBody']))
-    
-    def _add_projects(self, story):
-        """Add projects section"""
-        story.append(Spacer(1, 12))
-        story.append(Paragraph("Projects", self.styles['SectionHeading']))
-        
-        for proj in self.cv_data.projects:
-            name_line = f"<b>{proj.get('name', '')}</b>"
-            story.append(Paragraph(name_line, self.styles['Subheading']))
-            
-            if proj.get('description'):
-                story.append(Paragraph(proj['description'], self.styles['CVBody']))
-            
-            if proj.get('technologies'):
-                tech_line = f"<i>Technologies: {proj['technologies']}</i>"
-                story.append(Paragraph(tech_line, self.styles['CVBody']))
-            
-            story.append(Spacer(1, 8))
-    
-    def _add_certifications(self, story):
-        """Add certifications section"""
-        story.append(Spacer(1, 12))
-        story.append(Paragraph("Certifications", self.styles['SectionHeading']))
-        
-        for cert in self.cv_data.certifications:
-            story.append(Paragraph(f"• {cert}", self.styles['CVBullet']))
-    
-    def _add_languages(self, story):
-        """Add languages section"""
-        story.append(Spacer(1, 12))
-        story.append(Paragraph("Languages", self.styles['SectionHeading']))
-        
-        languages_text = ", ".join(self.cv_data.languages)
-        story.append(Paragraph(languages_text, self.styles['CVBody']))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#93c5fd'), spaceAfter=4))
+
+    @staticmethod
+    def _esc(text):
+        """Escape XML special chars for ReportLab Paragraph."""
+        if not text:
+            return ""
+        text = str(text)
+        text = text.replace('&', '&amp;')
+        text = text.replace('<', '&lt;')
+        text = text.replace('>', '&gt;')
+        return text

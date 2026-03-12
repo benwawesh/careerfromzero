@@ -11,8 +11,9 @@ djangorestframework-simplejwt>=5.3.0
 django-allauth>=0.57.0
 dj-rest-auth>=5.0.0
 
-# AI (Claude + CrewAI)
+# AI (Claude + OpenAI + CrewAI)
 anthropic>=0.40.0
+openai>=1.0.0
 crewai>=0.80.0
 litellm>=1.0.0
 langchain>=0.3.0

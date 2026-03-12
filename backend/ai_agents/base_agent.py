@@ -4,14 +4,14 @@ Provides foundation for all specialized agents in the system
 """
 
 from decouple import config
-from .services import ollama_service
+from .services import ai_service
 
 
 class CareerAgent:
     """
     Base class for all Career AI agents.
-    Uses Ollama directly via ollama_service for all LLM calls.
-    CrewAI integration is available lazily for future multi-agent workflows.
+    Uses Claude via ai_service for all LLM calls.
+    CrewAI integration is available lazily for multi-agent workflows.
     """
 
     def __init__(
@@ -49,11 +49,11 @@ class CareerAgent:
         return self._crew_agent
 
     def generate_response(self, prompt: str, temperature: float = 0.7) -> str:
-        """Generate a response using Ollama directly."""
+        """Generate a response using Claude."""
         system_prompt = f"You are a {self.role}. {self.goal} {self.backstory}"
 
         try:
-            response = ollama_service.generate(
+            response = ai_service.generate(
                 prompt=prompt,
                 system=system_prompt,
                 temperature=temperature

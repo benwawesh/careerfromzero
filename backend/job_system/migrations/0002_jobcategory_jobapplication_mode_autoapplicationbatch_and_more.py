@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('cv_builder', '0001_initial'),
+        ('cv_builder', '0002_schema_with_uuid'),
         ('job_system', '0001_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]

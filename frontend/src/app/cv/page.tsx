@@ -6,8 +6,10 @@ import { useRouter } from 'next/navigation'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { apiFetch } from '@/lib/apiFetch'
 
+type UUID = string
+
 interface CV {
-  id: number
+  id: UUID
   title: string
   original_filename: string
   file_type: string
@@ -102,7 +104,7 @@ function CVList() {
     }
   }
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: UUID) => {
     if (!confirm('Delete this CV?')) return
     const res = await apiFetch(`/api/cv/${id}/`, { method: 'DELETE' })
     if (res.ok) fetchCVs()
@@ -122,14 +124,20 @@ function CVList() {
             <h1 className="text-2xl font-bold text-gray-900">My CVs</h1>
             <p className="text-sm text-gray-500">{cvs.length} CV{cvs.length !== 1 ? 's' : ''} saved</p>
           </div>
-          <div className="flex items-center space-x-4">
-            <Link href="/dashboard" className="text-gray-600 hover:text-gray-900">Dashboard</Link>
+          <div className="flex items-center gap-3">
+            <Link href="/dashboard" className="text-gray-600 hover:text-gray-900 text-sm">Dashboard</Link>
             <button
               onClick={() => setShowUpload(true)}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
+              className="border border-blue-600 text-blue-600 px-4 py-2 rounded-lg hover:bg-blue-50 text-sm font-medium"
             >
               Upload CV
             </button>
+            <Link
+              href="/cv/builder"
+              className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 text-sm font-medium"
+            >
+              ✨ Build with AI
+            </Link>
           </div>
         </div>
       </header>

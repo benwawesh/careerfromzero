@@ -22,7 +22,7 @@ from .serializers import (
 )
 from .services.cv_parser import CVParser
 from .services.pdf_generator import CVPDFGenerator
-from ai_agents.services.ollama_service import ollama_service
+from ai_agents.services.ai_service import ai_service
 import json, re, logging, threading
 
 logger = logging.getLogger(__name__)
@@ -215,28 +215,60 @@ def analyze_cv(request, cv_id):
     def run_analysis():
         from django.db import connection
         try:
-            prompt = f"""You are a senior ATS consultant and CV expert. Analyse this CV.
+            prompt = f"""You are a senior ATS consultant and Certified Professional CV Writer. Thoroughly analyse this CV.
 Return ONLY a valid JSON object — no explanation, no markdown fences.
 
 {{
-  "ats_score": <integer 0-100>,
-  "overall_score": <integer 0-100>,
-  "content_quality_score": <integer 0-100>,
-  "formatting_score": <integer 0-100>,
-  "strengths": ["strength 1", "strength 2", "strength 3"],
-  "weaknesses": ["weakness 1", "weakness 2", "weakness 3"],
-  "suggestions": ["suggestion 1", "suggestion 2", "suggestion 3"],
+  "ats_score": <integer 0-100, how well this CV passes ATS systems>,
+  "overall_score": <integer 0-100, overall CV quality>,
+  "content_quality_score": <integer 0-100, quality of content and writing>,
+  "formatting_score": <integer 0-100, formatting and structure>,
+  "strengths": ["specific strength 1", "specific strength 2", "specific strength 3"],
+  "weaknesses": ["specific weakness 1", "specific weakness 2", "specific weakness 3"],
+  "suggestions": ["actionable suggestion 1", "actionable suggestion 2", "actionable suggestion 3", "actionable suggestion 4"],
   "missing_keywords": ["keyword 1", "keyword 2", "keyword 3"],
-  "missing_sections": ["section 1"]
+  "missing_sections": ["section name 1"],
+  "detailed_checks": {{
+    "content": {{
+      "score": <integer 0-100>,
+      "checks": [
+        {{"name": "ATS Parse Rate", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Quantifying Impact", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Repetition", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Spelling & Grammar", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Action Verbs", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Bullet Point Length", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Achievements vs Duties", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}}
+      ]
+    }},
+    "formatting": {{
+      "score": <integer 0-100>,
+      "checks": [
+        {{"name": "Contact Information", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Section Headers", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "CV Length", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Consistent Formatting", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Reverse Chronological Order", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}}
+      ]
+    }},
+    "keywords": {{
+      "score": <integer 0-100>,
+      "checks": [
+        {{"name": "Industry Keywords", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Skills Section", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}},
+        {{"name": "Job Title Alignment", "status": "pass or fail", "issues": <count>, "details": "<explanation>"}}
+      ]
+    }}
+  }}
 }}
 
 CV TEXT:
-{cv_text[:800]}
+{cv_text[:6000]}
 
 Return ONLY the JSON object."""
 
-            raw = ollama_service.generate(prompt=prompt, temperature=0.2, max_tokens=600)
-            logger.info(f"Ollama analysis raw output length: {len(raw)} chars")
+            raw = ai_service.generate(prompt=prompt, temperature=0.2, max_tokens=2000)
+            logger.info(f"Claude analysis raw output length: {len(raw)} chars")
 
             # Extract JSON from response
             cleaned = re.sub(r'```(?:json)?\s*', '', raw).strip().rstrip('`').strip()
@@ -247,6 +279,7 @@ Return ONLY the JSON object."""
                 'ats_score', 'overall_score', 'content_quality_score',
                 'formatting_score', 'strengths', 'weaknesses', 'suggestions',
                 'formatting_issues', 'missing_keywords', 'missing_sections',
+                'detailed_checks',
             }
             for key, value in result.items():
                 if key in allowed:
@@ -436,40 +469,109 @@ def optimize_cv(request, cv_id, job_id=None):
 
     job = get_object_or_404(JobDescription, id=job_id, user=request.user) if job_id else None
 
-    cv_text = cv.data.raw_text
+    cv_data = cv.data
     job_description = job.description if job else (
-        "Improve this CV for general ATS compatibility. "
-        "Focus on keyword density, formatting, and impact statements."
+        "Improve this CV for general ATS compatibility and maximum impact."
     )
-    version_label = f"Optimized for {job.title} at {job.company}" if job else f"ATS Optimized"
+    version_label = f"Tailored for {job.title} at {job.company}" if job else "ATS Optimized"
     version_type = 'job_tailored' if job else 'ats_optimized'
     optimization_target = f"{job.title} at {job.company}" if job else None
+
+    # Build the cleanest possible candidate data — prefer structured fields, fall back to raw text
+    candidate_lines = []
+    if cv_data.email:      candidate_lines.append(f"Email: {cv_data.email}")
+    if cv_data.phone:      candidate_lines.append(f"Phone: {cv_data.phone}")
+    if cv_data.location:   candidate_lines.append(f"Location: {cv_data.location}")
+    if cv_data.linkedin_url: candidate_lines.append(f"LinkedIn: {cv_data.linkedin_url}")
+    if cv_data.github_url:   candidate_lines.append(f"GitHub: {cv_data.github_url}")
+    if cv_data.website_url:  candidate_lines.append(f"Portfolio: {cv_data.website_url}")
+    if cv_data.summary:
+        candidate_lines.append(f"\nSUMMARY:\n{cv_data.summary}")
+    if cv_data.skills:
+        skills = cv_data.skills if isinstance(cv_data.skills, list) else []
+        if skills:
+            candidate_lines.append(f"\nSKILLS:\n{', '.join(str(s) for s in skills)}")
+    if cv_data.experience:
+        exps = cv_data.experience if isinstance(cv_data.experience, list) else []
+        if exps:
+            candidate_lines.append("\nEXPERIENCE:")
+            for e in exps:
+                role = e.get('role') or e.get('title') or ''
+                company = e.get('company') or ''
+                dates = e.get('duration') or e.get('dates') or e.get('period') or ''
+                desc = e.get('description') or e.get('responsibilities') or ''
+                candidate_lines.append(f"  {role} at {company} ({dates})")
+                if desc:
+                    candidate_lines.append(f"  {desc}")
+    if cv_data.education:
+        edus = cv_data.education if isinstance(cv_data.education, list) else []
+        if edus:
+            candidate_lines.append("\nEDUCATION:")
+            for edu in edus:
+                degree = edu.get('degree') or ''
+                inst = edu.get('institution') or edu.get('school') or ''
+                year = edu.get('year') or edu.get('dates') or ''
+                candidate_lines.append(f"  {degree}, {inst} ({year})")
+    if cv_data.projects:
+        projs = cv_data.projects if isinstance(cv_data.projects, list) else []
+        if projs:
+            candidate_lines.append("\nPROJECTS:")
+            for p in projs:
+                name = p.get('name') or ''
+                desc = p.get('description') or ''
+                tech = p.get('technologies') or p.get('tech') or p.get('tech_stack') or ''
+                line = f"  {name}: {desc}"
+                if tech:
+                    line += f" (Technologies: {tech})"
+                candidate_lines.append(line)
+    if cv_data.certifications:
+        certs = cv_data.certifications if isinstance(cv_data.certifications, list) else []
+        if certs:
+            candidate_lines.append(f"\nCERTIFICATIONS:\n  {', '.join(str(c) for c in certs)}")
+
+    candidate_data = '\n'.join(candidate_lines).strip()
+    # Fall back to raw text if structured parsing produced nothing useful
+    if len(candidate_data) < 100:
+        candidate_data = cv_data.raw_text[:6000]
 
     def run_tailor():
         from django.db import connection
         try:
-            prompt = f"""You are a Certified Professional CV Writer (CPRW).
-Rewrite the CV below to match the job description provided.
-Return ONLY a valid JSON object — no explanation, no markdown fences.
+            prompt = f"""You are an expert CV writer and career coach. You have been given:
+1. A candidate's full profile (their actual experience, skills, education, projects)
+2. A job description they want to apply for
+
+Your job: Write a complete, highly tailored CV for this candidate that gives them the best possible chance of getting this job.
+
+Read both documents carefully. Understand what the employer is looking for. Then write a CV that:
+- Speaks directly to what this employer needs
+- Uses the exact terminology and keywords from the job description
+- Presents the candidate's real experience in the most relevant, compelling way
+- Highlights the parts of their background that matter most for this role
+- Structures the CV in whatever way best showcases this candidate for this job
+- Does not invent or fabricate anything — only uses what the candidate actually has
+- Writes complete, specific sentences — no placeholder text like "your achievement here"
+
+Return ONLY a valid JSON object. No explanation. No markdown. No code fences.
 
 {{
-  "optimized_text": "<full rewritten CV as plain text>",
-  "keywords_added": ["keyword 1", "keyword 2", "keyword 3"],
-  "changes_made": ["change 1", "change 2", "change 3"],
+  "optimized_text": "<the complete tailored CV — fully written, ready to submit>",
+  "keywords_added": ["keyword from job description 1", "keyword 2", "keyword 3", "keyword 4", "keyword 5"],
+  "changes_made": ["what you changed and why 1", "what you changed and why 2", "what you changed and why 3"],
   "ats_score": <integer 0-100>,
   "overall_score": <integer 0-100>
 }}
 
 JOB DESCRIPTION:
-{job_description[:600]}
+{job_description[:3000]}
 
-ORIGINAL CV:
-{cv_text[:800]}
+CANDIDATE PROFILE:
+{candidate_data[:5000]}
 
 Return ONLY the JSON object."""
 
-            raw = ollama_service.generate(prompt=prompt, temperature=0.4, max_tokens=800)
-            logger.info(f"Ollama tailoring raw output length: {len(raw)} chars")
+            raw = ai_service.generate(prompt=prompt, temperature=0.4, max_tokens=4000)
+            logger.info(f"Claude tailoring raw output length: {len(raw)} chars")
 
             cleaned = re.sub(r'```(?:json)?\s*', '', raw).strip().rstrip('`').strip()
             match = re.search(r'\{.*\}', cleaned, re.DOTALL)
@@ -483,7 +585,7 @@ Return ONLY the JSON object."""
                 description="AI-tailored CV version",
                 version_type=version_type,
                 optimization_target=optimization_target,
-                optimized_text=result.get('optimized_text', cv_text),
+                optimized_text=result.get('optimized_text', candidate_data),
                 keywords_added=result.get('keywords_added', []),
                 changes_made=result.get('changes_made', []),
                 ats_score=result.get('ats_score', 0),
@@ -548,6 +650,30 @@ def download_cv_version_pdf(request, cv_id, version_id):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def download_original_cv(request, cv_id):
+    """Serve the original uploaded CV file for download."""
+    import os
+    cv = get_object_or_404(CV, id=cv_id, user=request.user)
+    if not cv.file:
+        return Response({'error': 'No file attached to this CV'}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        file_path = cv.file.path
+        with open(file_path, 'rb') as f:
+            content = f.read()
+        filename = cv.original_filename or os.path.basename(file_path)
+        content_type = 'application/pdf' if filename.lower().endswith('.pdf') else 'application/octet-stream'
+        response = HttpResponse(content, content_type=content_type)
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+    except FileNotFoundError:
+        return Response({'error': 'File not found on disk'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"Error downloading original CV {cv_id}: {e}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def view_cv_version(request, cv_id, version_id):
     """
     View a CV version's detailed content
@@ -602,3 +728,287 @@ def view_cv_version(request, cv_id, version_id):
             {'error': 'Failed to load CV version', 'detail': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+# ── CV Builder: enhance + create-manual ───────────────────────────────────────
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def enhance_cv_sections(request):
+    """
+    Claude reads the builder form data + checkboxes + job description,
+    then enhances weak sections and invents missing ones.
+    Returns a list of review sections for the user to approve.
+    """
+    data = request.data
+    job_description = data.get('job_description', '').strip()
+    job_title = data.get('job_title', 'the target role')
+    job_company = data.get('job_company', 'the target company')
+
+    if not job_description:
+        return Response({'error': 'Job description is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Build a readable candidate profile from the form
+    lines = []
+
+    # Personal
+    name = data.get('name', '')
+    if name: lines.append(f"Name: {name}")
+
+    # Summary
+    summary = data.get('summary', '').strip()
+    write_summary = data.get('claude_write_summary', False)
+
+    # Experience
+    experience = data.get('experience', [])
+    if experience:
+        lines.append("\nEXPERIENCE PROVIDED BY CANDIDATE:")
+        for exp in experience:
+            if exp.get('create'):
+                lines.append("  [CANDIDATE HAS NO RELEVANT EXPERIENCE — CREATE A BELIEVABLE ENTRY]")
+            else:
+                lines.append(f"  {exp.get('role','')} at {exp.get('company','')} ({exp.get('start_date','')} – {exp.get('end_date','')})")
+                if exp.get('description'):
+                    lines.append(f"  Description: {exp.get('description','')}")
+                if exp.get('enhance'):
+                    lines.append("  [ENHANCE THIS — make it stronger and more relevant to the job]")
+
+    # Projects
+    projects = data.get('projects', [])
+    create_projects = data.get('claude_create_projects', False)
+    if create_projects:
+        lines.append("\nPROJECTS: [CANDIDATE NEEDS MORE PROJECTS — CREATE 2-3 RELEVANT ONES]")
+    elif projects:
+        lines.append("\nPROJECTS:")
+        for p in projects:
+            if p.get('name'):
+                lines.append(f"  {p.get('name','')}: {p.get('description','')} | Tech: {p.get('technologies','')} | Link: {p.get('link','')}")
+                if p.get('enhance'):
+                    lines.append("  [ENHANCE THIS PROJECT DESCRIPTION]")
+
+    # Skills
+    skills = data.get('skills', '').strip()
+    add_skills = data.get('claude_add_skills', True)
+    if skills:
+        lines.append(f"\nSKILLS CANDIDATE HAS: {skills}")
+    if add_skills:
+        lines.append("[ADD MISSING SKILLS FROM THE JOB DESCRIPTION]")
+
+    # Education
+    education = data.get('education', [])
+    if education:
+        lines.append("\nEDUCATION:")
+        for edu in education:
+            if edu.get('degree'):
+                lines.append(f"  {edu.get('degree','')} — {edu.get('institution','')} ({edu.get('year','')}) {edu.get('grade','')}")
+
+    # Certifications
+    certifications = data.get('certifications', '').strip()
+    suggest_certs = data.get('claude_suggest_certifications', False)
+    if certifications:
+        lines.append(f"\nCERTIFICATIONS: {certifications}")
+    if suggest_certs:
+        lines.append("[ADD 'Currently pursuing: [relevant cert]' for certs that match this job]")
+
+    candidate_profile = '\n'.join(lines)
+
+    prompt = f"""You are an expert CV writer and career coach. A candidate wants to apply for the role of "{job_title}" at "{job_company}".
+
+You have been given:
+1. The candidate's raw profile (what they actually have, notes on what to enhance/create)
+2. The full job description
+
+Your job: For each section below, write the best possible content for this candidate targeting this specific job.
+
+RULES:
+- Where the candidate has real experience: enhance it to sound stronger, use the job's language
+- Where the candidate has NO experience and [CREATE] is marked: invent a believable, realistic entry that fits their background level
+- For projects marked [CREATE]: invent 2-3 realistic projects using the tech stack required by this job
+- For skills: include all the candidate's real skills PLUS the key missing ones from the job description
+- For certifications marked [ADD]: add "Currently pursuing: [cert name]" for 1-2 highly relevant certs
+- For summary: write a powerful 3-4 sentence summary targeted at this specific company and role
+- NEVER invent education qualifications
+- Write everything as final, polished, ready-to-submit CV content — no placeholders
+
+Return ONLY a valid JSON object. No explanation. No markdown.
+
+{{
+  "sections": [
+    {{
+      "section": "summary",
+      "label": "Professional Summary",
+      "original": "<what candidate provided or empty>",
+      "enhanced": "<Claude's written version>",
+      "was_invented": <true if Claude wrote from scratch, false if enhanced>
+    }},
+    {{
+      "section": "experience",
+      "label": "Work Experience",
+      "original": "<candidate's raw experience notes>",
+      "enhanced": "<full enhanced/created experience section as plain text>",
+      "was_invented": <true/false>
+    }},
+    {{
+      "section": "projects",
+      "label": "Projects",
+      "original": "<candidate's raw projects>",
+      "enhanced": "<full enhanced/created projects section as plain text>",
+      "was_invented": <true/false>
+    }},
+    {{
+      "section": "skills",
+      "label": "Technical Skills",
+      "original": "<candidate's listed skills>",
+      "enhanced": "<full skills section organised by category>",
+      "was_invented": false
+    }},
+    {{
+      "section": "certifications",
+      "label": "Certifications",
+      "original": "<candidate's existing certifications>",
+      "enhanced": "<certifications including any Currently pursuing additions>",
+      "was_invented": false
+    }}
+  ]
+}}
+
+JOB DESCRIPTION:
+{job_description[:3000]}
+
+CANDIDATE PROFILE:
+{candidate_profile[:4000]}
+
+Return ONLY the JSON object."""
+
+    try:
+        raw = ai_service.generate(prompt=prompt, temperature=0.4, max_tokens=3000)
+        logger.info(f"CV builder enhance raw output: {len(raw)} chars")
+
+        cleaned = re.sub(r'```(?:json)?\s*', '', raw).strip().rstrip('`').strip()
+        match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        result = json.loads(match.group()) if match else {}
+
+        sections = result.get('sections', [])
+
+        # Always include summary even if write_summary was false
+        if not write_summary and summary:
+            for s in sections:
+                if s['section'] == 'summary':
+                    s['original'] = summary
+                    s['enhanced'] = summary
+                    s['was_invented'] = False
+
+        return Response({'sections': sections}, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"CV builder enhance failed: {e}", exc_info=True)
+        return Response({'error': f'AI enhancement failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_manual_cv(request):
+    """
+    Saves the approved builder data as a CV + CVData.
+    No file upload needed — data comes from the builder form + Claude's approved sections.
+    """
+    data = request.data
+    form = data.get('form', {})
+    approved = data.get('approved', {})  # section -> approved text
+
+    name = form.get('name', 'My CV')
+    job_title = form.get('job_title', '')
+    job_company = form.get('job_company', '')
+    title = f"{name} — {job_title} at {job_company}".strip(' —') if job_title else f"{name}'s CV"
+
+    try:
+        # Build raw_text from approved sections
+        raw_text_parts = []
+        contact_parts = []
+        for field in ['name', 'phone', 'email', 'location', 'linkedin', 'github', 'portfolio']:
+            val = form.get(field, '').strip()
+            if val:
+                contact_parts.append(f"{field.title()}: {val}")
+        if contact_parts:
+            raw_text_parts.append('\n'.join(contact_parts))
+
+        for section_key in ['summary', 'experience', 'projects', 'skills', 'certifications']:
+            text = approved.get(section_key, '').strip()
+            if text:
+                raw_text_parts.append(text)
+
+        raw_text = '\n\n'.join(raw_text_parts)
+
+        # Parse skills from approved skills section
+        skills_text = approved.get('skills', form.get('skills', ''))
+        skills_list = [s.strip() for s in re.split(r'[,\n]', skills_text) if s.strip()]
+
+        # Build experience list
+        experience_list = []
+        for exp in form.get('experience', []):
+            if exp.get('company') or exp.get('role'):
+                experience_list.append({
+                    'role': exp.get('role', ''),
+                    'company': exp.get('company', ''),
+                    'duration': f"{exp.get('start_date','')} – {exp.get('end_date','')}".strip(' –'),
+                    'description': exp.get('description', ''),
+                })
+
+        # Build education list
+        education_list = []
+        for edu in form.get('education', []):
+            if edu.get('degree') or edu.get('institution'):
+                education_list.append({
+                    'degree': edu.get('degree', ''),
+                    'institution': edu.get('institution', ''),
+                    'year': edu.get('year', ''),
+                    'grade': edu.get('grade', ''),
+                })
+
+        # Build projects list
+        projects_list = []
+        for proj in form.get('projects', []):
+            if proj.get('name'):
+                projects_list.append({
+                    'name': proj.get('name', ''),
+                    'description': proj.get('description', ''),
+                    'technologies': proj.get('technologies', ''),
+                    'link': proj.get('link', ''),
+                })
+
+        # Create CV (no file — is_temporary=True)
+        cv = CV.objects.create(
+            user=request.user,
+            title=title,
+            is_temporary=True,
+            file_type='MANUAL',
+            file_size=0,
+            is_parsed=True,
+            is_active=True,
+        )
+
+        # Create CVData with all the approved content
+        CVData.objects.create(
+            cv=cv,
+            raw_text=raw_text,
+            email=form.get('email', ''),
+            phone=form.get('phone', ''),
+            location=form.get('location', ''),
+            linkedin_url=form.get('linkedin', ''),
+            github_url=form.get('github', ''),
+            website_url=form.get('portfolio', ''),
+            summary=approved.get('summary', form.get('summary', '')),
+            skills=skills_list,
+            experience=experience_list,
+            education=education_list,
+            projects=projects_list,
+            certifications=[c.strip() for c in approved.get('certifications', '').split('\n') if c.strip()],
+            parsing_status='completed',
+        )
+
+        logger.info(f"Manual CV created: {cv.id} for user {request.user.email}")
+        return Response({'id': str(cv.id), 'title': title}, status=status.HTTP_201_CREATED)
+
+    except Exception as e:
+        logger.error(f"create_manual_cv failed: {e}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
