@@ -17,12 +17,12 @@ services:
 
   backend:
     build: ./backend
-    command: python manage.py runserver 0.0.0.0:8000
+    command: python manage.py runserver 0.0.0.0:8010
     volumes:
       - ./backend:/app
       - media_data:/app/media
     ports:
-      - "8000:8000"
+      - "8010:8010"
     env_file:
       - ./backend/.env
     depends_on:
@@ -38,7 +38,7 @@ services:
     ports:
       - "3001:3001"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8010
 
 volumes:
   postgres_data:
