@@ -8,13 +8,13 @@
 
 ---
 
-## 1. Start Backend (Django on port 8000)
+## 1. Start Backend (Django on port 8010)
 
 ```bash
 cd backend
 source venv/bin/activate
 python manage.py migrate          # run once after pulling new changes
-python manage.py runserver 8000
+python manage.py runserver 8010
 ```
 
 Or use the script from the project root:
@@ -23,7 +23,7 @@ Or use the script from the project root:
 ./start-backend.sh
 ```
 
-Backend will be at: **http://localhost:8000**
+Backend will be at: **http://localhost:8010**
 
 ---
 
@@ -122,7 +122,7 @@ To run both servers in the background from one terminal:
 # Backend
 cd backend
 source venv/bin/activate
-python manage.py runserver 8000 > logs/django.log 2>&1 &
+python manage.py runserver 8010 > logs/django.log 2>&1 &
 echo "Backend PID: $!"
 
 # Frontend
@@ -143,7 +143,7 @@ Stop servers:
 ```bash
 kill <PID>
 # or kill all node/python dev servers:
-pkill -f "runserver 8000"
+pkill -f "runserver 8010"
 pkill -f "next dev"
 ```
 
@@ -154,5 +154,5 @@ pkill -f "next dev"
 | Service | URL |
 |---|---|
 | Frontend | http://localhost:3001 |
-| Backend API | http://localhost:8000/api/ |
-| Django Admin | http://localhost:8000/admin/ |
+| Backend API | http://localhost:8010/api/ |
+| Django Admin | http://localhost:8010/admin/ |

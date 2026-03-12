@@ -2,7 +2,7 @@
  * API functions for Job Application Workflow
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8010';
 
 export interface MatchJobRequest {
   cv_id: string;

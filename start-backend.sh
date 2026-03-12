@@ -30,8 +30,8 @@ fi
 
 # Start the server
 echo ""
-echo "Starting Django backend server on port 8000..."
+echo "Starting Django backend server on port 8010..."
 echo "Press Ctrl+C to stop the server"
 echo ""
 
-python manage.py runserver 8000
+python manage.py runserver 8010
