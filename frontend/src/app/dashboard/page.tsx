@@ -136,11 +136,11 @@ export default function Dashboard() {
               <h3 className="text-xl font-semibold text-gray-900 ml-3">Interview Practice</h3>
             </div>
             <p className="text-gray-600 mb-4">
-              Practice with AI-powered mock interviews using voice interaction.
+              Practice with Alex, your AI interview coach. Get scored feedback and a final report.
             </p>
-            <button className="w-full bg-purple-600 text-white py-2 rounded-lg hover:bg-purple-700 transition-colors">
+            <Link href="/interview" className="block w-full bg-purple-600 text-white py-2 rounded-lg hover:bg-purple-700 transition-colors text-center">
               Start Interview
-            </button>
+            </Link>
           </div>
 
           {/* Job Simulation Card */}

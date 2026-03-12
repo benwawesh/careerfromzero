@@ -1,158 +1,93 @@
-# Career AI — Local Startup (No Docker)
+# Career AI — Local Startup (Docker)
+
+Same stack as production: PostgreSQL, Redis, Celery Worker, Celery Beat, Backend, Frontend.
 
 ## Requirements
-- Python 3.12+ with `venv` at `backend/venv/`
-- Node.js 18+ with `node_modules` at `frontend/node_modules/`
-- PostgreSQL running locally (`career_ai_db`, user: `postgres`, pass: `postgres`)
-- Redis running locally (for Celery caching)
+- Docker + Docker Compose installed
+- `backend/.env` file configured (copy from `.env.example` and fill in keys)
 
 ---
 
-## 1. Start Backend (Django on port 8010)
+## Start Everything
 
 ```bash
-cd backend
-source venv/bin/activate
-python manage.py migrate          # run once after pulling new changes
-python manage.py runserver 8010
+docker compose up --build
 ```
 
-Or use the script from the project root:
+First run takes a few minutes to build images. After that:
 
 ```bash
-./start-backend.sh
+docker compose up
 ```
 
-Backend will be at: **http://localhost:8010**
-
----
-
-## 2. Start Frontend (Next.js on port 3001)
-
-Open a second terminal:
-
+To run in background:
 ```bash
-cd frontend
-npm run dev -- --port 3001
-```
-
-Or use the script from the project root:
-
-```bash
-./start-frontend.sh
-```
-
-Frontend will be at: **http://localhost:3001**
-
----
-
-## 3. (Optional) Start Celery Worker
-
-Celery handles background tasks (job scraping, email). In a third terminal:
-
-```bash
-cd backend
-source venv/bin/activate
-celery -A career_ai worker --loglevel=info
+docker compose up -d
 ```
 
 ---
 
-## First-Time Setup
-
-### Python virtual environment
-
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Node dependencies
-
-```bash
-cd frontend
-npm install
-```
-
-### Database
-
-```bash
-# Create DB in psql
-createdb career_ai_db
-
-# Apply migrations
-cd backend
-source venv/bin/activate
-python manage.py migrate
-
-# Create admin superuser
-python manage.py createsuperuser
-```
-
----
-
-## Environment Variables
-
-Copy and edit the `.env` file in `backend/`:
-
-```
-backend/.env
-```
-
-Key values to set:
-
-| Variable | Description |
-|---|---|
-| `SECRET_KEY` | Django secret key |
-| `DB_NAME` / `DB_USER` / `DB_PASSWORD` | PostgreSQL credentials |
-| `ANTHROPIC_API_KEY` | Claude AI key (primary AI) |
-| `OPENAI_API_KEY` | OpenAI key (Whisper STT/TTS) |
-| `MPESA_*` | M-Pesa Daraja credentials |
-| `PESAPAL_*` | PesaPal card payment credentials |
-
----
-
-## Running Servers (Background, with logs)
-
-To run both servers in the background from one terminal:
-
-```bash
-# Backend
-cd backend
-source venv/bin/activate
-python manage.py runserver 8010 > logs/django.log 2>&1 &
-echo "Backend PID: $!"
-
-# Frontend
-cd ../frontend
-npm run dev -- --port 3001 > /tmp/frontend.log 2>&1 &
-echo "Frontend PID: $!"
-```
-
-Check logs:
-
-```bash
-tail -f backend/logs/django.log
-tail -f /tmp/frontend.log
-```
-
-Stop servers:
-
-```bash
-kill <PID>
-# or kill all node/python dev servers:
-pkill -f "runserver 8010"
-pkill -f "next dev"
-```
-
----
-
-## URLs Summary
+## URLs
 
 | Service | URL |
 |---|---|
 | Frontend | http://localhost:3001 |
 | Backend API | http://localhost:8010/api/ |
 | Django Admin | http://localhost:8010/admin/ |
+
+---
+
+## Useful Commands
+
+```bash
+# View logs
+docker compose logs -f
+
+# View logs for one service
+docker compose logs -f backend
+docker compose logs -f celery_worker
+
+# Stop everything
+docker compose down
+
+# Stop and delete all data (volumes) — WARNING: deletes database!
+docker compose down -v
+
+# Run Django management commands
+docker compose exec backend python manage.py createsuperuser
+docker compose exec backend python manage.py migrate
+docker compose exec backend python manage.py shell
+
+# Rebuild after changing requirements.txt or package.json
+docker compose up --build
+```
+
+---
+
+## Services
+
+| Service | Description |
+|---|---|
+| `db` | PostgreSQL 16 database |
+| `redis` | Redis 7 (cache + Celery broker) |
+| `backend` | Django on port 8000 (mapped to 8010 on host) |
+| `celery_worker` | Celery background task worker |
+| `celery_beat` | Celery scheduled task scheduler |
+| `frontend` | Next.js dev server on port 3001 |
+
+---
+
+## Environment Variables
+
+Edit `backend/.env`. Key values:
+
+| Variable | Description |
+|---|---|
+| `SECRET_KEY` | Django secret key |
+| `DB_NAME` / `DB_USER` / `DB_PASSWORD` | PostgreSQL credentials |
+| `DB_HOST` | Must be `db` (Docker service name) |
+| `REDIS_URL` | Must be `redis://redis:6379/0` |
+| `ANTHROPIC_API_KEY` | Claude AI key |
+| `OPENAI_API_KEY` | OpenAI key (Whisper STT/TTS) |
+| `MPESA_*` | M-Pesa Daraja credentials |
+| `PESAPAL_*` | PesaPal card payment credentials |

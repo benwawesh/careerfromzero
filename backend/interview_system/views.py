@@ -1,3 +1,507 @@
-from django.shortcuts import render
+import base64
+import logging
 
-# Create your views here.
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+
+from .models import (
+    InterviewSession,
+    InterviewQuestion,
+    InterviewAnswer,
+    ReviewMessage,
+)
+from .services.interview_service import (
+    generate_phase1_questions,
+    generate_phase2_questions,
+    generate_phase3_questions,
+    evaluate_answer,
+    calculate_phase_score,
+    generate_review_opening,
+    chat_review,
+    generate_final_report,
+    text_to_speech,
+    transcribe_audio,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _serialize_question(q: InterviewQuestion) -> dict:
+    answer = None
+    try:
+        a = q.answer
+        answer = {
+            'answer_text': a.answer_text,
+            'score': a.score,
+            'feedback': a.feedback,
+            'is_correct': a.is_correct,
+            'needs_review': a.needs_review,
+            'submitted_at': a.submitted_at.isoformat(),
+        }
+    except InterviewAnswer.DoesNotExist:
+        pass
+
+    return {
+        'id': q.id,
+        'phase': q.phase,
+        'order': q.order,
+        'question_type': q.question_type,
+        'section': q.section,
+        'question_text': q.question_text,
+        'options': q.options,
+        # Only expose correct_answer after the question has been answered
+        'correct_answer': q.correct_answer if answer else None,
+        'ideal_answer_guide': q.ideal_answer_guide if answer else None,
+        'answer': answer,
+    }
+
+
+def _serialize_session(session: InterviewSession, include_questions: bool = False) -> dict:
+    data = {
+        'id': str(session.id),
+        'career_goal': session.career_goal,
+        'experience_level': session.experience_level,
+        'interview_type': session.interview_type,
+        'mode': session.mode,
+        'status': session.status,
+        'phase1_score': session.phase1_score,
+        'phase2_score': session.phase2_score,
+        'phase3_score': session.phase3_score,
+        'overall_score': session.overall_score,
+        'phase1_passed': session.phase1_passed,
+        'phase2_passed': session.phase2_passed,
+        'phase3_passed': session.phase3_passed,
+        'created_at': session.created_at.isoformat(),
+        'updated_at': session.updated_at.isoformat(),
+    }
+    if include_questions:
+        # Determine current phase from status
+        phase_map = {
+            'phase1_test': 1,
+            'phase1_review': 1,
+            'phase2_interview': 2,
+            'phase2_review': 2,
+            'phase3_interview': 3,
+            'phase3_review': 3,
+            'complete': 3,
+        }
+        current_phase = phase_map.get(session.status, 1)
+        questions = session.questions.filter(phase=current_phase)
+        data['questions'] = [_serialize_question(q) for q in questions]
+        data['current_phase'] = current_phase
+    return data
+
+
+def _current_phase_number(session: InterviewSession) -> int:
+    phase_map = {
+        'phase1_test': 1,
+        'phase1_review': 1,
+        'phase2_interview': 2,
+        'phase2_review': 2,
+        'phase3_interview': 3,
+        'phase3_review': 3,
+        'complete': 3,
+    }
+    return phase_map.get(session.status, 1)
+
+
+def _save_questions(session: InterviewSession, questions: list, phase: int):
+    """Bulk-create InterviewQuestion objects for a phase."""
+    objs = []
+    for q in questions:
+        objs.append(InterviewQuestion(
+            session=session,
+            phase=phase,
+            order=q.get('order', 0),
+            question_type=q.get('question_type', 'short_answer'),
+            question_text=q.get('question_text', ''),
+            options=q.get('options'),
+            correct_answer=q.get('correct_answer'),
+            ideal_answer_guide=q.get('ideal_answer_guide'),
+            section=q.get('section'),
+        ))
+    InterviewQuestion.objects.bulk_create(objs)
+
+
+# ── Views ─────────────────────────────────────────────────────────────────────
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def list_create_sessions(request):
+    """
+    GET  — list the authenticated user's sessions.
+    POST — create a new session and generate Phase 1 questions.
+    """
+    if request.method == 'GET':
+        sessions = InterviewSession.objects.filter(user=request.user)
+        return Response([_serialize_session(s) for s in sessions])
+
+    # POST — create session
+    career_goal = request.data.get('career_goal', '').strip()
+    experience_level = request.data.get('experience_level', '').strip()
+    interview_type = request.data.get('interview_type', '').strip()
+    mode = request.data.get('mode', 'text').strip()
+
+    if not career_goal or not experience_level or not interview_type:
+        return Response(
+            {'error': 'career_goal, experience_level, and interview_type are required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        questions_data = generate_phase1_questions(career_goal, experience_level, interview_type)
+    except Exception as e:
+        logger.error("Phase 1 question generation failed: %s", e)
+        return Response({'error': f'Failed to generate questions: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    session = InterviewSession.objects.create(
+        user=request.user,
+        career_goal=career_goal,
+        experience_level=experience_level,
+        interview_type=interview_type,
+        mode=mode,
+        status='phase1_test',
+    )
+
+    _save_questions(session, questions_data, phase=1)
+
+    return Response(_serialize_session(session, include_questions=True), status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def session_detail(request, session_id):
+    """GET — return session detail including questions for the current phase."""
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+    return Response(_serialize_session(session, include_questions=True))
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def submit_answer(request, session_id):
+    """
+    POST — submit an answer for a question.
+    Body: { question_id, answer_text }
+    """
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    question_id = request.data.get('question_id')
+    answer_text = request.data.get('answer_text', '').strip()
+
+    if not question_id or not answer_text:
+        return Response(
+            {'error': 'question_id and answer_text are required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    question = get_object_or_404(InterviewQuestion, id=question_id, session=session)
+
+    # Prevent double-answering
+    if hasattr(question, 'answer'):
+        return Response(
+            {'error': 'This question has already been answered.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        evaluation = evaluate_answer(question, answer_text)
+    except Exception as e:
+        logger.error("Answer evaluation failed: %s", e)
+        return Response({'error': f'Evaluation failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    answer = InterviewAnswer.objects.create(
+        question=question,
+        answer_text=answer_text,
+        score=evaluation.get('score'),
+        feedback=evaluation.get('feedback'),
+        is_correct=evaluation.get('is_correct'),
+        needs_review=evaluation.get('needs_review', False),
+    )
+
+    # Find the next unanswered question in the same phase
+    current_phase = question.phase
+    answered_ids = InterviewAnswer.objects.filter(
+        question__session=session, question__phase=current_phase
+    ).values_list('question_id', flat=True)
+    next_question_qs = InterviewQuestion.objects.filter(
+        session=session, phase=current_phase
+    ).exclude(id__in=answered_ids).order_by('order').first()
+
+    return Response({
+        'question_id': question.id,
+        'score': answer.score,
+        'feedback': answer.feedback,
+        'is_correct': answer.is_correct,
+        'needs_review': answer.needs_review,
+        'next_question': _serialize_question(next_question_qs) if next_question_qs else None,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def complete_phase(request, session_id):
+    """
+    POST — mark the current phase complete, calculate score, advance to review status.
+    """
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    phase = _current_phase_number(session)
+
+    # Verify all questions for this phase have been answered
+    total_questions = InterviewQuestion.objects.filter(session=session, phase=phase).count()
+    answered = InterviewAnswer.objects.filter(question__session=session, question__phase=phase).count()
+    if answered < total_questions:
+        return Response(
+            {'error': f'Not all questions answered. {answered}/{total_questions} complete.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    score = calculate_phase_score(session, phase)
+    pass_threshold = {1: 60.0, 2: 65.0, 3: 70.0}.get(phase, 60.0)
+    passed = score >= pass_threshold
+
+    # Persist score
+    setattr(session, f'phase{phase}_score', score)
+    setattr(session, f'phase{phase}_passed', passed)
+
+    # Advance status to review
+    next_status = {1: 'phase1_review', 2: 'phase2_review', 3: 'phase3_review'}.get(phase, 'complete')
+    session.status = next_status
+    session.save()
+
+    # Generate Alex's opening review message
+    opening = generate_review_opening(session, phase)
+    review_msg = ReviewMessage.objects.create(
+        session=session,
+        phase=phase,
+        role='alex',
+        content=opening,
+    )
+
+    return Response({
+        'phase': phase,
+        'score': score,
+        'passed': passed,
+        'pass_threshold': pass_threshold,
+        'status': session.status,
+        'opening_message': opening,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_review(request, session_id):
+    """GET — return all review messages for the current phase."""
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+    phase = _current_phase_number(session)
+
+    messages = ReviewMessage.objects.filter(session=session, phase=phase)
+    return Response({
+        'phase': phase,
+        'status': session.status,
+        'messages': [
+            {
+                'id': m.id,
+                'role': m.role,
+                'content': m.content,
+                'question_ref_id': m.question_ref_id,
+                'created_at': m.created_at.isoformat(),
+            }
+            for m in messages
+        ],
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def review_chat(request, session_id):
+    """
+    POST — send a message in the review session, get Alex's coaching response.
+    Body: { message }
+    Returns: { response, audio (optional base64) }
+    """
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+    phase = _current_phase_number(session)
+
+    user_message = request.data.get('message', '').strip()
+    if not user_message:
+        return Response({'error': 'message is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Save user's message
+    ReviewMessage.objects.create(
+        session=session,
+        phase=phase,
+        role='user',
+        content=user_message,
+    )
+
+    # Build conversation history for Claude (exclude the message we just saved so we append it in the service)
+    history_qs = ReviewMessage.objects.filter(session=session, phase=phase).order_by('created_at')
+    conversation_history = []
+    for m in history_qs:
+        role = 'assistant' if m.role == 'alex' else 'user'
+        conversation_history.append({'role': role, 'content': m.content})
+
+    # Remove the last entry (user message we just added) — it's appended inside chat_review
+    if conversation_history and conversation_history[-1]['role'] == 'user':
+        conversation_history = conversation_history[:-1]
+
+    try:
+        alex_response = chat_review(session, phase, user_message, conversation_history)
+    except Exception as e:
+        logger.error("Review chat failed: %s", e)
+        return Response({'error': f'Chat failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # Save Alex's response
+    ReviewMessage.objects.create(
+        session=session,
+        phase=phase,
+        role='alex',
+        content=alex_response,
+    )
+
+    # Optionally generate TTS if session is in voice mode
+    audio_b64 = None
+    if session.mode == 'voice':
+        audio_bytes = text_to_speech(alex_response)
+        if audio_bytes:
+            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+    return Response({
+        'response': alex_response,
+        'audio': audio_b64,
+        'format': 'mp3' if audio_b64 else None,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def next_phase(request, session_id):
+    """
+    POST — advance session to the next interview phase and generate questions.
+    """
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    transitions = {
+        'phase1_review': ('phase2_interview', 2),
+        'phase2_review': ('phase3_interview', 3),
+    }
+
+    if session.status not in transitions:
+        return Response(
+            {'error': f'Cannot advance to next phase from status "{session.status}".'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    next_status, next_phase_num = transitions[session.status]
+
+    # Generate questions for the next phase
+    try:
+        if next_phase_num == 2:
+            questions_data = generate_phase2_questions(
+                session.career_goal, session.experience_level, session.interview_type
+            )
+        else:
+            questions_data = generate_phase3_questions(
+                session.career_goal, session.experience_level, session.interview_type
+            )
+    except Exception as e:
+        logger.error("Phase %s question generation failed: %s", next_phase_num, e)
+        return Response(
+            {'error': f'Failed to generate Phase {next_phase_num} questions: {e}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    session.status = next_status
+    session.save()
+
+    _save_questions(session, questions_data, phase=next_phase_num)
+
+    # Return session detail with new questions
+    return Response(_serialize_session(session, include_questions=True))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_report(request, session_id):
+    """GET — return the final performance report."""
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    # Mark as complete if coming from phase3_review
+    if session.status == 'phase3_review':
+        # Calculate overall score from all phases
+        scores = [s for s in [session.phase1_score, session.phase2_score, session.phase3_score] if s is not None]
+        if scores:
+            session.overall_score = round(sum(scores) / len(scores), 1)
+        session.status = 'complete'
+        session.save()
+
+    if session.status != 'complete':
+        return Response(
+            {'error': 'Report is only available after all phases are complete.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        report = generate_final_report(session)
+    except Exception as e:
+        logger.error("Final report generation failed: %s", e)
+        return Response({'error': f'Report generation failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({
+        'session_id': str(session.id),
+        'phase1_score': session.phase1_score,
+        'phase2_score': session.phase2_score,
+        'phase3_score': session.phase3_score,
+        'overall_score': session.overall_score,
+        'phase1_passed': session.phase1_passed,
+        'phase2_passed': session.phase2_passed,
+        'phase3_passed': session.phase3_passed,
+        'report': report,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def tts_endpoint(request):
+    """
+    POST — convert text to speech.
+    Body: { text }
+    Returns: { audio: <base64 mp3>, format: "mp3" }
+    """
+    text = request.data.get('text', '').strip()
+    if not text:
+        return Response({'error': 'text is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    audio_bytes = text_to_speech(text)
+    if not audio_bytes:
+        return Response({'error': 'TTS failed.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+    return Response({'audio': audio_b64, 'format': 'mp3'})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def transcribe_endpoint(request):
+    """
+    POST — transcribe an uploaded audio file.
+    Form-data: { audio: <file> }
+    Returns: { text: "<transcription>" }
+    """
+    audio_file = request.FILES.get('audio')
+    if not audio_file:
+        return Response({'error': 'audio file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        text = transcribe_audio(audio_file)
+    except Exception as e:
+        logger.error("Transcription failed: %s", e)
+        return Response({'error': f'Transcription failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({'text': text})

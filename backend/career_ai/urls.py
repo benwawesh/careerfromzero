@@ -57,6 +57,9 @@ urlpatterns = [
     # AI Agents
     path('api/ai/', include('ai_agents.urls')),
 
+    # Interview Simulator
+    path('api/interview/', include('interview_system.urls')),
+
     # Custom admin panel with obscure URL
     # Admins login through the same endpoint as regular users
     # Admin status is determined by is_staff flag

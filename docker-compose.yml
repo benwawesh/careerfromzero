@@ -1,36 +1,85 @@
-# Development docker-compose
-# Usage: docker-compose up
-
-version: '3.9'
+# Local development docker-compose — mirrors production exactly
+# Usage: docker compose up --build
+# Hot reload enabled for backend and frontend
 
 services:
   db:
     image: postgres:16-alpine
+    restart: always
     environment:
-      POSTGRES_DB: career_ai_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${DB_NAME:-career_ai_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save ""
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   backend:
     build: ./backend
-    command: python manage.py runserver 0.0.0.0:8010
+    restart: always
+    command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
     volumes:
       - ./backend:/app
       - media_data:/app/media
+      - static_data:/app/staticfiles
     ports:
-      - "8010:8010"
+      - "8010:8000"
     env_file:
       - ./backend/.env
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_worker:
+    build: ./backend
+    restart: always
+    command: sh -c "celery -A career_ai worker --loglevel=info --concurrency=2"
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./backend/.env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_beat:
+    build: ./backend
+    restart: always
+    command: sh -c "celery -A career_ai beat --loglevel=info"
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./backend/.env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     build: ./frontend
-    command: npm run dev -- -p 3001
+    restart: always
+    command: sh -c "npm run dev -- -p 3001"
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -42,4 +91,6 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   media_data:
+  static_data:
