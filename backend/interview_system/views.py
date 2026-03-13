@@ -20,7 +20,10 @@ from .services.interview_service import (
     evaluate_answer,
     calculate_phase_score,
     generate_review_opening,
+    generate_intro_greeting,
+    chat_intro,
     chat_review,
+    chat_question_coaching,
     generate_final_report,
     text_to_speech,
     transcribe_audio,
@@ -82,6 +85,7 @@ def _serialize_session(session: InterviewSession, include_questions: bool = Fals
     if include_questions:
         # Determine current phase from status
         phase_map = {
+            'intro': 1,
             'phase1_test': 1,
             'phase1_review': 1,
             'phase2_interview': 2,
@@ -99,6 +103,7 @@ def _serialize_session(session: InterviewSession, include_questions: bool = Fals
 
 def _current_phase_number(session: InterviewSession) -> int:
     phase_map = {
+        'intro': 1,
         'phase1_test': 1,
         'phase1_review': 1,
         'phase2_interview': 2,
@@ -153,24 +158,16 @@ def list_create_sessions(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    try:
-        questions_data = generate_phase1_questions(career_goal, experience_level, interview_type)
-    except Exception as e:
-        logger.error("Phase 1 question generation failed: %s", e)
-        return Response({'error': f'Failed to generate questions: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
     session = InterviewSession.objects.create(
         user=request.user,
         career_goal=career_goal,
         experience_level=experience_level,
         interview_type=interview_type,
         mode=mode,
-        status='phase1_test',
+        status='intro',
     )
 
-    _save_questions(session, questions_data, phase=1)
-
-    return Response(_serialize_session(session, include_questions=True), status=status.HTTP_201_CREATED)
+    return Response(_serialize_session(session), status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET'])
@@ -468,6 +465,162 @@ def get_report(request, session_id):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+def intro_chat(request, session_id):
+    """
+    POST — handle intro conversation with Alex.
+    Body: { message: "" } for greeting, { message: "..." } for conversation.
+    Returns: { response, audio, start_phase1 }
+    """
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    if session.status != 'intro':
+        return Response({'error': 'Session is not in intro phase.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user_message = request.data.get('message', '').strip()
+
+    # Load existing conversation history (phase=0 for intro)
+    history_qs = ReviewMessage.objects.filter(session=session, phase=0).order_by('created_at')
+    conversation_history = []
+    for m in history_qs:
+        role = 'assistant' if m.role == 'alex' else 'user'
+        conversation_history.append({'role': role, 'content': m.content})
+
+    # Empty message with no history → generate greeting
+    if not user_message and not conversation_history:
+        try:
+            greeting = generate_intro_greeting(session)
+        except Exception as e:
+            logger.error("Intro greeting failed: %s", e)
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        ReviewMessage.objects.create(session=session, phase=0, role='alex', content=greeting)
+
+        audio_b64 = None
+        if session.mode == 'voice':
+            audio_bytes = text_to_speech(greeting)
+            if audio_bytes:
+                audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+        return Response({'response': greeting, 'audio': audio_b64, 'start_phase1': False})
+
+    if not user_message:
+        return Response({'error': 'message is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Save user message
+    ReviewMessage.objects.create(session=session, phase=0, role='user', content=user_message)
+
+    try:
+        result = chat_intro(session, user_message, conversation_history)
+    except Exception as e:
+        logger.error("Intro chat failed: %s", e)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    alex_text = result['text']
+    ReviewMessage.objects.create(session=session, phase=0, role='alex', content=alex_text)
+
+    audio_b64 = None
+    if session.mode == 'voice':
+        audio_bytes = text_to_speech(alex_text)
+        if audio_bytes:
+            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+    return Response({
+        'response': alex_text,
+        'audio': audio_b64,
+        'start_phase1': result['start_phase1'],
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def start_phase1(request, session_id):
+    """
+    POST — generate Phase 1 questions and advance session from intro → phase1_test.
+    Returns: full session with questions.
+    """
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    if session.status != 'intro':
+        return Response({'error': 'Session is not in intro phase.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        questions_data = generate_phase1_questions(
+            session.career_goal, session.experience_level, session.interview_type
+        )
+    except Exception as e:
+        logger.error("Phase 1 question generation failed: %s", e)
+        return Response({'error': f'Failed to generate questions: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    session.status = 'phase1_test'
+    session.save()
+
+    _save_questions(session, questions_data, phase=1)
+
+    return Response(_serialize_session(session, include_questions=True))
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def question_coach(request, session_id):
+    """
+    POST — coaching chat about a specific answered question.
+    Body: { question_id, message }
+    Returns: { response, audio }
+    """
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    question_id = request.data.get('question_id')
+    user_message = request.data.get('message', '').strip()
+
+    if not question_id or not user_message:
+        return Response({'error': 'question_id and message are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    question = get_object_or_404(InterviewQuestion, id=question_id, session=session)
+
+    try:
+        answer = question.answer
+    except InterviewAnswer.DoesNotExist:
+        return Response({'error': 'Question has not been answered yet.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Load coaching history for this question
+    history_qs = ReviewMessage.objects.filter(session=session, question_ref=question).order_by('created_at')
+    conversation_history = []
+    for m in history_qs:
+        role = 'assistant' if m.role == 'alex' else 'user'
+        conversation_history.append({'role': role, 'content': m.content})
+
+    # Save user message
+    ReviewMessage.objects.create(
+        session=session, phase=question.phase, role='user',
+        content=user_message, question_ref=question
+    )
+
+    try:
+        alex_response = chat_question_coaching(session, question, answer, user_message, conversation_history)
+    except Exception as e:
+        logger.error("Question coaching failed: %s", e)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    ReviewMessage.objects.create(
+        session=session, phase=question.phase, role='alex',
+        content=alex_response, question_ref=question
+    )
+
+    audio_b64 = None
+    if session.mode == 'voice':
+        audio_bytes = text_to_speech(alex_response)
+        if audio_bytes:
+            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+    return Response({
+        'response': alex_response,
+        'audio': audio_b64,
+        'format': 'mp3' if audio_b64 else None,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def tts_endpoint(request):
     """
     POST — convert text to speech.
@@ -499,6 +652,7 @@ def transcribe_endpoint(request):
         return Response({'error': 'audio file is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
+        audio_file.seek(0)
         text = transcribe_audio(audio_file)
     except Exception as e:
         logger.error("Transcription failed: %s", e)

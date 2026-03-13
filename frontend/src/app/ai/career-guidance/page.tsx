@@ -1,152 +1,189 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import TokenBalance from '@/components/TokenBalance'
 import { apiFetch } from '@/lib/apiFetch'
 
-interface Message {
-  role: 'user' | 'assistant'
-  content: string
+interface GuidanceSession {
+  id: string
+  goal: string
+  current_level: string
+  status: string
+  topics: { id: number; title: string; status: string; score: number | null }[]
+  created_at: string
 }
 
 export default function CareerGuidancePage() {
   return (
     <ProtectedRoute>
-      <CareerGuidance />
+      <CareerGuidanceList />
     </ProtectedRoute>
   )
 }
 
-function CareerGuidance() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: 'assistant',
-      content: "Hello! I'm your AI career advisor. I can help you with career path planning, job search strategies, skill development, salary negotiation, and more. What would you like to discuss today?",
-    },
-  ])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
+function CareerGuidanceList() {
+  const router = useRouter()
+  const [sessions, setSessions] = useState<GuidanceSession[]>([])
+  const [loading, setLoading] = useState(true)
+  const [creating, setCreating] = useState(false)
+  const [goal, setGoal] = useState('')
   const [error, setError] = useState('')
-  const [balance, setBalance] = useState<number | null>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const [showForm, setShowForm] = useState(false)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  useEffect(() => {
-    apiFetch('/api/payments/balance/').then(r => r.ok ? r.json() : null).then(d => {
-      if (d) setBalance(d.balance)
-    })
+    apiFetch('/api/guidance/sessions/')
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { setSessions(data); setLoading(false) })
+      .catch(() => setLoading(false))
   }, [])
 
-  const sendMessage = async () => {
-    const text = input.trim()
-    if (!text || loading) return
-
-    setInput('')
+  const createSession = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!goal.trim()) return
     setError('')
-    const newMessages: Message[] = [...messages, { role: 'user', content: text }]
-    setMessages(newMessages)
-    setLoading(true)
-
-    const res = await apiFetch('/api/ai/career/guidance/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: text,
-        history: newMessages.slice(-10),
-      }),
-    })
-
-    const data = await res.json()
-    setLoading(false)
-
-    if (res.ok && data.success) {
-      setMessages(prev => [...prev, { role: 'assistant', content: data.reply }])
-      if (balance !== null) setBalance(b => b !== null ? Math.max(0, b - 10) : null)
-    } else if (res.status === 402) {
-      setError(data.message)
-    } else {
-      setError(data.message || 'Something went wrong. Please try again.')
+    setCreating(true)
+    try {
+      const res = await apiFetch('/api/guidance/sessions/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: goal.trim() }),
+      })
+      if (res.ok) {
+        const session = await res.json()
+        router.push(`/ai/career-guidance/${session.id}`)
+      } else {
+        const d = await res.json().catch(() => ({}))
+        setError(d.error || 'Failed to create session.')
+        setCreating(false)
+      }
+    } catch {
+      setError('Network error. Please try again.')
+      setCreating(false)
     }
   }
 
+  const levelLabel: Record<string, string> = {
+    beginner: 'Beginner',
+    some_experience: 'Some Experience',
+    intermediate: 'Intermediate',
+    experienced: 'Experienced',
+  }
+
+  const statusBadge = (s: string) => {
+    if (s === 'onboarding') return <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">Setting Up</span>
+    if (s === 'active') return <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">In Progress</span>
+    if (s === 'complete') return <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">Complete</span>
+    return null
+  }
+
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <header className="bg-white shadow flex-shrink-0">
+    <div className="min-h-screen bg-gray-50">
+      <header className="bg-white shadow">
         <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
           <div>
             <Link href="/dashboard" className="text-gray-500 hover:text-gray-900 text-sm">← Dashboard</Link>
-            <h1 className="text-xl font-bold text-gray-900 mt-1">Career Guidance</h1>
+            <h1 className="text-xl font-bold text-gray-900 mt-1">Career Coach</h1>
+            <p className="text-sm text-gray-500">Your personal AI career trainer</p>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-gray-500">10 credits/message</span>
-            <TokenBalance />
-          </div>
+          <button
+            onClick={() => setShowForm(true)}
+            className="bg-blue-600 text-white px-4 py-2 rounded-xl font-semibold hover:bg-blue-700 text-sm"
+          >
+            + New Goal
+          </button>
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto max-w-4xl w-full mx-auto px-4 py-6 space-y-4">
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-2xl px-4 py-3 rounded-2xl text-sm leading-relaxed ${
-              msg.role === 'user'
-                ? 'bg-blue-600 text-white rounded-br-sm'
-                : 'bg-white border border-gray-200 text-gray-800 rounded-bl-sm shadow-sm'
-            }`}>
-              {msg.content}
-            </div>
-          </div>
-        ))}
-        {loading && (
-          <div className="flex justify-start">
-            <div className="bg-white border border-gray-200 rounded-2xl rounded-bl-sm px-4 py-3 shadow-sm">
-              <div className="flex gap-1">
-                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay:'0ms'}} />
-                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay:'150ms'}} />
-                <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay:'300ms'}} />
+      <div className="max-w-4xl mx-auto px-4 py-8">
+        {showForm && (
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-1">What's your career goal?</h2>
+            <p className="text-sm text-gray-500 mb-4">Be specific — e.g. "Become a software engineer", "Learn Python for data science", "Get promoted to senior manager"</p>
+            <form onSubmit={createSession} className="space-y-3">
+              <textarea
+                value={goal}
+                onChange={e => setGoal(e.target.value)}
+                placeholder="e.g. I want to become a full-stack web developer from scratch"
+                rows={3}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm resize-none"
+                disabled={creating}
+              />
+              {error && <p className="text-sm text-red-600">{error}</p>}
+              <div className="flex gap-3">
+                <button
+                  type="submit"
+                  disabled={creating || !goal.trim()}
+                  className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {creating ? 'Starting...' : 'Start Coaching →'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowForm(false); setGoal(''); setError('') }}
+                  className="px-4 py-3 border border-gray-300 rounded-xl text-gray-600 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
               </div>
-            </div>
+            </form>
           </div>
         )}
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm flex items-center justify-between">
-            <span>{error}</span>
-            {error.includes('credits') && (
-              <Link href="/payments" className="ml-4 bg-red-600 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-red-700 flex-shrink-0">
-                Top Up
-              </Link>
-            )}
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
 
-      <div className="flex-shrink-0 bg-white border-t border-gray-200">
-        <div className="max-w-4xl mx-auto px-4 py-4">
-          <div className="flex gap-3">
-            <input
-              type="text"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-              placeholder="Ask for career advice..."
-              className="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              disabled={loading}
-            />
+        {loading ? (
+          <div className="text-center py-16 text-gray-400">Loading...</div>
+        ) : sessions.length === 0 && !showForm ? (
+          <div className="text-center py-16">
+            <div className="text-5xl mb-4">🎯</div>
+            <h2 className="text-xl font-bold text-gray-800 mb-2">No coaching sessions yet</h2>
+            <p className="text-gray-500 mb-6">Tell Alex your career goal and get a personalised roadmap + daily lessons.</p>
             <button
-              onClick={sendMessage}
-              disabled={loading || !input.trim()}
-              className="bg-blue-600 text-white px-5 py-3 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={() => setShowForm(true)}
+              className="bg-blue-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-blue-700"
             >
-              Send
+              Start Your First Session
             </button>
           </div>
-          <p className="text-xs text-gray-400 mt-2 text-center">Each message costs 10 credits</p>
-        </div>
+        ) : (
+          <div className="space-y-4">
+            {sessions.map(s => {
+              const completed = s.topics.filter(t => t.status === 'complete').length
+              const total = s.topics.length
+              const pct = total > 0 ? Math.round((completed / total) * 100) : 0
+              return (
+                <Link
+                  key={s.id}
+                  href={`/ai/career-guidance/${s.id}`}
+                  className="block bg-white rounded-2xl shadow-sm border border-gray-200 p-5 hover:border-blue-300 hover:shadow-md transition-all"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-lg">🎯</span>
+                        <h3 className="font-bold text-gray-900 truncate">{s.goal}</h3>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm text-gray-500 flex-wrap">
+                        {s.current_level && <span>{levelLabel[s.current_level] || s.current_level}</span>}
+                        {total > 0 && <span>{completed}/{total} topics</span>}
+                        <span>{new Date(s.created_at).toLocaleDateString()}</span>
+                      </div>
+                      {total > 0 && (
+                        <div className="mt-3">
+                          <div className="w-full bg-gray-100 rounded-full h-1.5">
+                            <div className="bg-blue-500 h-1.5 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                          </div>
+                          <p className="text-xs text-gray-400 mt-1">{pct}% complete</p>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-shrink-0">{statusBadge(s.status)}</div>
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )

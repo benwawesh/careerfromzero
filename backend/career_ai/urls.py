@@ -60,6 +60,9 @@ urlpatterns = [
     # Interview Simulator
     path('api/interview/', include('interview_system.urls')),
 
+    # Career Guidance Coach
+    path('api/guidance/', include('career_guidance.urls')),
+
     # Custom admin panel with obscure URL
     # Admins login through the same endpoint as regular users
     # Admin status is determined by is_staff flag

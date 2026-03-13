@@ -11,6 +11,26 @@ from ai_agents.services.openai_service import openai_service
 
 logger = logging.getLogger(__name__)
 
+VALID_QUESTION_TYPES = {'multiple_choice', 'short_answer', 'situational', 'behavioural', 'technical'}
+
+def sanitize_question_type(qt: str) -> str:
+    """Map any Claude-returned question_type to a valid known type."""
+    qt = qt.lower().strip()
+    if qt in VALID_QUESTION_TYPES:
+        return qt
+    if 'multiple' in qt or 'choice' in qt:
+        return 'multiple_choice'
+    if 'short' in qt or 'written' in qt or 'communication' in qt:
+        return 'short_answer'
+    if 'situation' in qt or 'judgement' in qt or 'judgment' in qt:
+        return 'situational'
+    if 'behaviour' in qt or 'behavior' in qt or 'star' in qt or 'motivation' in qt or 'culture' in qt or 'hr' in qt:
+        return 'behavioural'
+    if 'technical' in qt or 'role' in qt or 'knowledge' in qt or 'pressure' in qt or 'scenario' in qt:
+        return 'technical'
+    return 'short_answer'  # safe default
+
+
 ALEX_PERSONA = """You are Alex, an expert interview coach at CareerFromZero — a career development platform.
 Your job is to coach and guide users to succeed in real job interviews.
 You are warm, professional, encouraging, and direct.
@@ -67,6 +87,8 @@ Return ONLY valid JSON array, no other text:
     end = response.rfind(']') + 1
     json_str = response[start:end]
     questions = json.loads(json_str)
+    for q in questions:
+        q['question_type'] = sanitize_question_type(q.get('question_type', 'short_answer'))
     return questions
 
 
@@ -104,6 +126,8 @@ Return ONLY valid JSON array:
     start = response.find('[')
     end = response.rfind(']') + 1
     questions = json.loads(response[start:end])
+    for q in questions:
+        q['question_type'] = sanitize_question_type(q.get('question_type', 'short_answer'))
     return questions
 
 
@@ -141,6 +165,8 @@ Return ONLY valid JSON array:
     start = response.find('[')
     end = response.rfind(']') + 1
     questions = json.loads(response[start:end])
+    for q in questions:
+        q['question_type'] = sanitize_question_type(q.get('question_type', 'short_answer'))
     return questions
 
 
@@ -235,6 +261,86 @@ Do NOT use bullet points. Write as natural speech (it will be spoken aloud)."""
     return ai_service.generate(prompt, system=ALEX_PERSONA, max_tokens=300, temperature=0.7)
 
 
+def generate_intro_greeting(session) -> str:
+    """Generate Alex's first greeting message for the intro phase."""
+    prompt = f"""You are meeting a job candidate for the very first time at the start of an interview simulation.
+
+Career Goal: {session.career_goal}
+Experience Level: {session.experience_level}
+Interview Type: {session.interview_type}
+
+Write your opening greeting in 2-3 natural sentences:
+1. Introduce yourself as Alex from CareerFromZero
+2. Welcome them warmly
+3. Ask how they're feeling today
+
+Be warm and natural — like a real interviewer. Do NOT mention the interview phases yet."""
+
+    return ai_service.generate(prompt, system=ALEX_PERSONA, max_tokens=150, temperature=0.8)
+
+
+def chat_intro(session, user_message: str, conversation_history: List[Dict]) -> Dict:
+    """
+    Handle intro conversation. Returns { text, start_phase1 }.
+    start_phase1 is True when the candidate is ready to begin.
+    """
+    system = f"""{ALEX_PERSONA}
+
+You are in the PRE-INTERVIEW introduction phase.
+Career Goal: {session.career_goal}
+Experience Level: {session.experience_level}
+Interview Type: {session.interview_type}
+
+Guide the conversation naturally in this order:
+1. Respond warmly to how they're feeling
+2. Ask 1-2 warm-up questions (e.g. "Tell me a bit about yourself" or "What drew you to this kind of role?")
+3. Explain the 3 phases:
+   - Phase 1: Written screening test (10 questions, tests role knowledge)
+   - Phase 2: Conversational HR/behavioural interview (15 questions)
+   - Phase 3: Deep-dive technical interview (10 challenging questions)
+4. Ask if they are ready to begin Phase 1
+
+When the candidate clearly says they are ready to begin / start / yes / let's go — add [READY_TO_START] at the very end of your response.
+
+Rules:
+- Be warm, encouraging, and conversational
+- Keep responses to 2-4 sentences
+- Stay on topic — this is interview preparation
+- Do NOT add [READY_TO_START] until they confirm they're ready"""
+
+    messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
+    response = ai_service.chat(messages, max_tokens=350, temperature=0.8)
+
+    start_phase1 = '[READY_TO_START]' in response
+    clean_response = response.replace('[READY_TO_START]', '').strip()
+    return {'text': clean_response, 'start_phase1': start_phase1}
+
+
+def chat_question_coaching(session, question, answer, user_message: str, conversation_history: List[Dict]) -> str:
+    """Handle coaching conversation about a specific answered question."""
+    system = f"""{ALEX_PERSONA}
+
+You are coaching the candidate on a specific interview question they just answered.
+Career Goal: {session.career_goal}
+Question: {question.question_text}
+Question Type: {question.question_type}
+Their Answer: {answer.answer_text}
+Score: {answer.score}/10
+Your evaluation: {answer.feedback}
+Ideal Answer Guide: {question.ideal_answer_guide}
+
+Your job:
+- Help them understand what was strong and what to improve
+- If they ask for an example answer, give a brief one
+- If they ask follow-up questions, answer helpfully
+- If they go off topic, gently redirect to interview prep
+- Keep responses to 3-4 sentences max
+- Be encouraging and specific"""
+
+    messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
+    return ai_service.chat(messages, max_tokens=350, temperature=0.7)
+
+
 def chat_review(session, phase: int, user_message: str, conversation_history: List[Dict]) -> str:
     """
     Handle a user message during review session. Claude responds as Alex.
@@ -265,7 +371,7 @@ Your job: Coach them through their weak answers.
 - Be encouraging and specific. Speak naturally (responses will be read aloud).
 - Keep responses under 4 sentences."""
 
-    messages = conversation_history + [{"role": "user", "content": user_message}]
+    messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
     return ai_service.chat(messages, max_tokens=400, temperature=0.7)
 
 

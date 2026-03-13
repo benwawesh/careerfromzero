@@ -1,6 +1,4 @@
-# Career AI — Local Startup (Docker)
-
-Same stack as production: PostgreSQL, Redis, Celery Worker, Celery Beat, Backend, Frontend.
+# Career AI — Startup Guide
 
 ## Requirements
 - Docker + Docker Compose installed
@@ -8,27 +6,20 @@ Same stack as production: PostgreSQL, Redis, Celery Worker, Celery Beat, Backend
 
 ---
 
-## Start Everything
+## Mode 1 — Development (hot reload)
+
+Use this every day for local development. Code changes apply instantly without rebuilding.
 
 ```bash
 docker compose up --build
 ```
 
-First run takes a few minutes to build images. After that:
-
+After first build, just:
 ```bash
 docker compose up
 ```
 
-To run in background:
-```bash
-docker compose up -d
-```
-
----
-
-## URLs
-
+**URLs:**
 | Service | URL |
 |---|---|
 | Frontend | http://localhost:3001 |
@@ -37,13 +28,41 @@ docker compose up -d
 
 ---
 
+## Mode 2 — Local Production Simulation (built, gunicorn)
+
+Use this to test exactly how the app behaves in production before deploying.
+Runs gunicorn + built Next.js instead of dev servers. Slower to start but matches production behaviour.
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.local-prod.yml up --build
+```
+
+**Same URLs as dev mode** — `http://localhost:3001` and `http://localhost:8010/api/`
+
+Stop:
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.local-prod.yml down
+```
+
+---
+
+## Mode 3 — Production (on the server)
+
+Run on the production server only. Uses gunicorn + built Next.js + nginx reverse proxy.
+
+```bash
+docker compose -f docker-compose.prod.yml up --build -d
+```
+
+**Do not run this locally** — the frontend build uses empty API URLs and relies on nginx.
+
+---
+
 ## Useful Commands
 
 ```bash
-# View logs
+# View logs (dev mode)
 docker compose logs -f
-
-# View logs for one service
 docker compose logs -f backend
 docker compose logs -f celery_worker
 
@@ -53,8 +72,9 @@ docker compose down
 # Stop and delete all data (volumes) — WARNING: deletes database!
 docker compose down -v
 
-# Run Django management commands
+# Django management
 docker compose exec backend python manage.py createsuperuser
+docker compose exec backend python manage.py makemigrations
 docker compose exec backend python manage.py migrate
 docker compose exec backend python manage.py shell
 
@@ -70,10 +90,10 @@ docker compose up --build
 |---|---|
 | `db` | PostgreSQL 16 database |
 | `redis` | Redis 7 (cache + Celery broker) |
-| `backend` | Django on port 8000 (mapped to 8010 on host) |
+| `backend` | Django — port 8000 internally, 8010 on host |
 | `celery_worker` | Celery background task worker |
 | `celery_beat` | Celery scheduled task scheduler |
-| `frontend` | Next.js dev server on port 3001 |
+| `frontend` | Next.js — port 3001 |
 
 ---
 
@@ -88,6 +108,6 @@ Edit `backend/.env`. Key values:
 | `DB_HOST` | Must be `db` (Docker service name) |
 | `REDIS_URL` | Must be `redis://redis:6379/0` |
 | `ANTHROPIC_API_KEY` | Claude AI key |
-| `OPENAI_API_KEY` | OpenAI key (Whisper STT/TTS) |
+| `OPENAI_API_KEY` | OpenAI key (Whisper STT / TTS) |
 | `MPESA_*` | M-Pesa Daraja credentials |
 | `PESAPAL_*` | PesaPal card payment credentials |

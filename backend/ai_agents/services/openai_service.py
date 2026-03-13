@@ -31,15 +31,26 @@ class OpenAIService:
     def transcribe(self, audio_file, language: str = 'en') -> str:
         """
         Transcribe audio to text using Whisper.
-        audio_file: an open file-like object (e.g. open('audio.mp3', 'rb'))
+        audio_file: a Django UploadedFile, open file-like object, or bytes.
         Returns the transcribed text string.
         """
         if not self.client:
             raise Exception("OpenAI client not available. Check OPENAI_API_KEY and openai package.")
         try:
+            # OpenAI SDK requires bytes, io.IOBase, PathLike, or a tuple.
+            # Django's UploadedFile is not accepted directly — convert to tuple.
+            if hasattr(audio_file, 'read'):
+                audio_file.seek(0)
+                file_bytes = audio_file.read()
+                filename = getattr(audio_file, 'name', 'recording.webm')
+                content_type = getattr(audio_file, 'content_type', 'audio/webm')
+                file_data = (filename, file_bytes, content_type)
+            else:
+                file_data = audio_file
+
             transcript = self.client.audio.transcriptions.create(
                 model="whisper-1",
-                file=audio_file,
+                file=file_data,
                 language=language,
             )
             return transcript.text

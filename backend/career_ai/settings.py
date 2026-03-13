@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'ai_agents',
     'admin_panel',  # Custom admin panel (not Django admin)
     'payments',
+    'career_guidance',
 ]
 
 MIDDLEWARE = [

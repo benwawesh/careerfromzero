@@ -15,13 +15,13 @@ from .exceptions import InvalidCredentialsException
 
 
 class LoginRateThrottle(throttling.AnonRateThrottle):
-    """Throttle for login endpoint - 5 attempts per hour"""
-    rate = '5/h'
+    """Throttle for login endpoint - 100 attempts per hour (dev-friendly)"""
+    rate = '100/h'
 
 
 class RegisterRateThrottle(throttling.AnonRateThrottle):
-    """Throttle for registration endpoint - 3 attempts per hour"""
-    rate = '3/h'
+    """Throttle for registration endpoint - 20 attempts per hour"""
+    rate = '20/h'
 
 User = get_user_model()
 

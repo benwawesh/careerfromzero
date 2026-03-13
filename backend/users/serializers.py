@@ -67,15 +67,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = (
-            'id', 'email', 'first_name', 'last_name',
-            'password', 'password2', 'phone_number', 'bio', 'location',
-            'linkedin_url', 'github_url', 'portfolio_url', 'job_search_preferences',
-            'career_goals', 'profile_picture'
-        )
+        fields = ('id', 'username', 'email', 'password', 'password2')
         extra_kwargs = {
-            'first_name': {'required': True},
-            'last_name': {'required': True},
+            'username': {'required': True},
             'email': {'required': True},
         }
 
@@ -86,7 +80,6 @@ class UserSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop('password2')
-        # username is auto-generated in User.save() from the email prefix
         user = User.objects.create_user(**validated_data)
 
         # Give free trial tokens to new user

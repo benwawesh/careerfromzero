@@ -19,6 +19,7 @@ TYPE_CHOICES = [
 ]
 
 STATUS_CHOICES = [
+    ('intro', 'Introduction'),
     ('phase1_test', 'Phase 1 - Written Test'),
     ('phase1_review', 'Phase 1 - Review'),
     ('phase2_interview', 'Phase 2 - Interview'),
@@ -35,7 +36,7 @@ class InterviewSession(models.Model):
     experience_level = models.CharField(max_length=20, choices=LEVEL_CHOICES)
     interview_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
     mode = models.CharField(max_length=10, default='text')  # text or voice
-    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='phase1_test')
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='intro')
     phase1_score = models.FloatField(null=True, blank=True)
     phase2_score = models.FloatField(null=True, blank=True)
     phase3_score = models.FloatField(null=True, blank=True)
@@ -61,7 +62,7 @@ class InterviewQuestion(models.Model):
     session = models.ForeignKey(InterviewSession, on_delete=models.CASCADE, related_name='questions')
     phase = models.IntegerField()  # 1, 2, or 3
     order = models.IntegerField()
-    question_type = models.CharField(max_length=20, choices=QUESTION_TYPE_CHOICES)
+    question_type = models.CharField(max_length=50, choices=QUESTION_TYPE_CHOICES)
     question_text = models.TextField()
     options = models.JSONField(null=True, blank=True)  # list of strings for multiple choice
     correct_answer = models.TextField(null=True, blank=True)
