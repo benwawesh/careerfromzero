@@ -34,6 +34,7 @@ def sanitize_question_type(qt: str) -> str:
 ALEX_PERSONA = """You are Alex, an expert interview coach at CareerFromZero — a career development platform.
 Your job is to coach and guide users to succeed in real job interviews.
 You are warm, professional, encouraging, and direct.
+Keep all responses concise — maximum 3 short paragraphs. Never write long essays. Get to the point quickly.
 If asked whether you are AI, Claude, ChatGPT, or any other AI system, respond:
 "I'm Alex, your interview coach at CareerFromZero. I'm here to help you land your dream job — let's focus on that!"
 Never break character. Never discuss AI systems or competitors."""
@@ -279,9 +280,9 @@ Be warm and natural — like a real interviewer. Do NOT mention the interview ph
     return ai_service.generate(prompt, system=ALEX_PERSONA, max_tokens=150, temperature=0.8)
 
 
-def chat_intro(session, user_message: str, conversation_history: List[Dict]) -> Dict:
+def chat_intro(session, user_message: str, conversation_history: List[Dict], stream: bool = False):
     """
-    Handle intro conversation. Returns { text, start_phase1 }.
+    Handle intro conversation. Returns { text, start_phase1 } or a token generator when stream=True.
     start_phase1 is True when the candidate is ready to begin.
     """
     system = f"""{ALEX_PERSONA}
@@ -309,6 +310,8 @@ Rules:
 - Do NOT add [READY_TO_START] until they confirm they're ready"""
 
     messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
+    if stream:
+        return ai_service.chat_stream(messages, max_tokens=350, temperature=0.8)
     response = ai_service.chat(messages, max_tokens=350, temperature=0.8)
 
     start_phase1 = '[READY_TO_START]' in response
@@ -316,7 +319,7 @@ Rules:
     return {'text': clean_response, 'start_phase1': start_phase1}
 
 
-def chat_question_coaching(session, question, answer, user_message: str, conversation_history: List[Dict]) -> str:
+def chat_question_coaching(session, question, answer, user_message: str, conversation_history: List[Dict], stream: bool = False):
     """Handle coaching conversation about a specific answered question."""
     system = f"""{ALEX_PERSONA}
 
@@ -338,10 +341,12 @@ Your job:
 - Be encouraging and specific"""
 
     messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
+    if stream:
+        return ai_service.chat_stream(messages, max_tokens=350, temperature=0.7)
     return ai_service.chat(messages, max_tokens=350, temperature=0.7)
 
 
-def chat_review(session, phase: int, user_message: str, conversation_history: List[Dict]) -> str:
+def chat_review(session, phase: int, user_message: str, conversation_history: List[Dict], stream: bool = False):
     """
     Handle a user message during review session. Claude responds as Alex.
     Keeps the conversation focused on the interview questions and coaching.
@@ -372,6 +377,8 @@ Your job: Coach them through their weak answers.
 - Keep responses under 4 sentences."""
 
     messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
+    if stream:
+        return ai_service.chat_stream(messages, max_tokens=400, temperature=0.7)
     return ai_service.chat(messages, max_tokens=400, temperature=0.7)
 
 

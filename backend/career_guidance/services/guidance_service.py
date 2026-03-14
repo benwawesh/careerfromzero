@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 ALEX_PERSONA = """You are Alex, an expert career coach at CareerFromZero — a career development platform.
 Your job is to help users achieve their career goals through personalised coaching, structured learning plans, and skill development.
 You are warm, encouraging, practical, and direct. You believe anyone can achieve their career goal with the right plan and consistency.
+Keep all responses concise — maximum 3 short paragraphs. Never write long essays. Get to the point quickly.
 If asked whether you are AI, Claude, ChatGPT, or any other AI system, respond:
 "I'm Alex, your career coach at CareerFromZero. I'm here to help you reach your goals — let's focus on that!"
 Never break character. Never discuss AI systems or competitors."""
@@ -36,10 +37,10 @@ Write a warm, energetic opening message as Alex.
     return ai_service.chat(messages, max_tokens=200, temperature=0.8)
 
 
-def chat_onboarding(session, user_message: str, conversation_history: List[Dict]) -> Dict:
+def chat_onboarding(session, user_message: str, conversation_history: List[Dict], stream: bool = False):
     """
     Onboarding conversation. Alex asks about level, time commitment, learning preferences.
-    When enough info is gathered, returns start_roadmap=True.
+    When enough info is gathered, returns start_roadmap=True (or generator when stream=True).
     """
     system = f"""{ALEX_PERSONA}
 
@@ -60,6 +61,8 @@ Rules:
 - Do NOT add [ROADMAP_READY] until you have both their level AND time commitment"""
 
     messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
+    if stream:
+        return ai_service.chat_stream(messages, max_tokens=350, temperature=0.8)
     response = ai_service.chat(messages, max_tokens=350, temperature=0.8)
 
     start_roadmap = '[ROADMAP_READY]' in response
@@ -100,11 +103,11 @@ Return ONLY valid JSON array, no other text:
     return json.loads(response[start:end])
 
 
-def chat_lesson(session, topic, user_message: str, conversation_history: List[Dict]) -> Dict:
+def chat_lesson(session, topic, user_message: str, conversation_history: List[Dict], stream: bool = False):
     """
     Lesson conversation for a specific topic.
     Alex teaches the topic through conversation.
-    When the lesson content is fully covered, returns quiz_ready=True.
+    When the lesson content is fully covered, returns quiz_ready=True (or generator when stream=True).
     """
     system = f"""{ALEX_PERSONA}
 
@@ -127,6 +130,8 @@ Rules:
 - Do NOT add [QUIZ_READY] until the core topic content has been covered"""
 
     messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
+    if stream:
+        return ai_service.chat_stream(messages, max_tokens=400, temperature=0.7)
     response = ai_service.chat(messages, max_tokens=400, temperature=0.7)
 
     quiz_ready = '[QUIZ_READY]' in response
@@ -134,10 +139,10 @@ Rules:
     return {'text': clean, 'quiz_ready': quiz_ready}
 
 
-def run_quiz(session, topic, user_message: str, conversation_history: List[Dict]) -> Dict:
+def run_quiz(session, topic, user_message: str, conversation_history: List[Dict], stream: bool = False):
     """
     Quiz conversation for a topic. Alex asks 3-5 questions.
-    Returns score and passed when complete.
+    Returns score and passed when complete (or generator when stream=True).
     Sentinel: [QUIZ_COMPLETE:score] e.g. [QUIZ_COMPLETE:80]
     """
     system = f"""{ALEX_PERSONA}
@@ -160,6 +165,8 @@ Rules:
 - Do NOT add [QUIZ_COMPLETE:score] until all questions are done and scored"""
 
     messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
+    if stream:
+        return ai_service.chat_stream(messages, max_tokens=400, temperature=0.7)
     response = ai_service.chat(messages, max_tokens=400, temperature=0.7)
 
     score = None
@@ -188,7 +195,7 @@ Rules:
     }
 
 
-def chat_general(session, user_message: str, conversation_history: List[Dict]) -> str:
+def chat_general(session, user_message: str, conversation_history: List[Dict], stream: bool = False):
     """General coaching chat — for questions, motivation, advice outside lessons."""
     completed = session.topics.filter(status='complete').count()
     total = session.topics.count()
@@ -210,6 +217,8 @@ Your job:
 - Keep responses to 3-5 sentences"""
 
     messages = [{"role": "system", "content": system}] + conversation_history + [{"role": "user", "content": user_message}]
+    if stream:
+        return ai_service.chat_stream(messages, max_tokens=400, temperature=0.7)
     return ai_service.chat(messages, max_tokens=400, temperature=0.7)
 
 

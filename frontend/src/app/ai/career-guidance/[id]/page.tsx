@@ -4,7 +4,8 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { apiFetch } from '@/lib/apiFetch'
+import { apiFetch, streamFetch } from '@/lib/apiFetch'
+import { useSentenceTTS } from '@/lib/sentenceTTS'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -30,27 +31,6 @@ interface Session {
 }
 
 type ChatMsg = { role: 'alex' | 'user'; text: string }
-
-// ─── Audio (singleton — stops previous before playing new) ───────────────────
-
-let _activeAudio: HTMLAudioElement | null = null
-
-function playAudio(base64: string): Promise<void> {
-  return new Promise(resolve => {
-    try {
-      if (_activeAudio) {
-        _activeAudio.pause()
-        _activeAudio.src = ''
-        _activeAudio = null
-      }
-      const audio = new Audio(`data:audio/mp3;base64,${base64}`)
-      _activeAudio = audio
-      audio.onended = () => { _activeAudio = null; resolve() }
-      audio.onerror = () => { _activeAudio = null; resolve() }
-      audio.play().catch(() => { _activeAudio = null; resolve() })
-    } catch { resolve() }
-  })
-}
 
 // ─── Voice Input (Whisper) ────────────────────────────────────────────────────
 
@@ -217,37 +197,16 @@ function ChatBubble({ msg, speaking = false }: { msg: ChatMsg; speaking?: boolea
   )
 }
 
-// ─── Voice toggle button ──────────────────────────────────────────────────────
-
-function VoiceToggle({ enabled, onChange }: { enabled: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      onClick={() => onChange(!enabled)}
-      title={enabled ? 'Voice on — click to turn off' : 'Voice off — click to turn on'}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-        enabled
-          ? 'bg-blue-600 text-white shadow-sm'
-          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-      }`}
-    >
-      {enabled ? '🔊' : '🔇'}
-      <span className="hidden sm:inline">{enabled ? 'Voice On' : 'Voice Off'}</span>
-    </button>
-  )
-}
-
 // ─── Chat Input ───────────────────────────────────────────────────────────────
 
 function ChatInput({
   onSend,
   disabled,
   placeholder = 'Type your message...',
-  voiceEnabled = false,
 }: {
   onSend: (text: string) => void
   disabled: boolean
   placeholder?: string
-  voiceEnabled?: boolean
 }) {
   const [input, setInput] = useState('')
 
@@ -263,31 +222,24 @@ function ChatInput({
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex gap-2 items-end">
-        {voiceEnabled && (
-          <VoiceInput onTranscript={onVoiceTranscript} disabled={disabled} />
-        )}
-        <textarea
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-          placeholder={voiceEnabled ? 'Speak or type your message...' : placeholder}
-          rows={2}
-          disabled={disabled}
-          className="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm resize-none"
-        />
-        <button
-          onClick={send}
-          disabled={disabled || !input.trim()}
-          className="px-5 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed self-end"
-        >
-          Send
-        </button>
-      </div>
-      {voiceEnabled && (
-        <p className="text-xs text-gray-400 text-center">🎤 Tap mic → speak → tap again to stop. Alex will reply in voice too.</p>
-      )}
+    <div className="flex gap-2 items-end">
+      <VoiceInput onTranscript={onVoiceTranscript} disabled={disabled} />
+      <textarea
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+        placeholder={placeholder}
+        rows={2}
+        disabled={disabled}
+        className="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm resize-none"
+      />
+      <button
+        onClick={send}
+        disabled={disabled || !input.trim()}
+        className="px-5 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed self-end"
+      >
+        Send
+      </button>
     </div>
   )
 }
@@ -311,7 +263,6 @@ function CoachingSession() {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [voiceEnabled, setVoiceEnabled] = useState(false)
 
   useEffect(() => { fetchSession() }, [sessionId])
 
@@ -345,10 +296,10 @@ function CoachingSession() {
   )
 
   if (session.status === 'onboarding') {
-    return <OnboardingChat session={session} onReady={fetchSession} voiceEnabled={voiceEnabled} onVoiceToggle={setVoiceEnabled} />
+    return <OnboardingChat session={session} onReady={fetchSession} />
   }
 
-  return <ActiveSession session={session} onRefresh={fetchSession} voiceEnabled={voiceEnabled} onVoiceToggle={setVoiceEnabled} />
+  return <ActiveSession session={session} onRefresh={fetchSession} />
 }
 
 // ─── Onboarding Chat ──────────────────────────────────────────────────────────
@@ -356,33 +307,48 @@ function CoachingSession() {
 function OnboardingChat({
   session,
   onReady,
-  voiceEnabled,
-  onVoiceToggle,
 }: {
   session: Session
   onReady: () => void
-  voiceEnabled: boolean
-  onVoiceToggle: (v: boolean) => void
 }) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [sending, setSending] = useState(false)
-  const [speakingIdx, setSpeakingIdx] = useState<number | null>(null)
   const [generatingRoadmap, setGeneratingRoadmap] = useState(false)
   const [error, setError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const loadedRef = useRef(false)
 
+  const { onToken, onStreamEnd, speakFull, stop } = useSentenceTTS()
+
   useEffect(() => { loadGreeting() }, [])
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+  useEffect(() => { return () => { stop() } }, [])
 
-  const addAlexMsg = async (text: string, audio: string | null) => {
-    const idx = messages.length
+  const addAlexMsg = (text: string) => {
     setMessages(prev => [...prev, { role: 'alex', text }])
-    if (audio && voiceEnabled) {
-      setSpeakingIdx(idx)
-      await playAudio(audio)
-      setSpeakingIdx(null)
-    }
+    speakFull(text)
+  }
+
+  // Start a new empty alex message for streaming
+  const startAlexMsg = () => setMessages(prev => [...prev, { role: 'alex', text: '' }])
+
+  // Append token to the last alex message
+  const appendAlexToken = (token: string) => setMessages(prev => {
+    const updated = [...prev]
+    const last = updated[updated.length - 1]
+    if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: last.text + token }
+    return updated
+  })
+
+  // Finalize last alex message with clean text
+  const finalizeAlexMsg = (cleanText: string) => {
+    setMessages(prev => {
+      const updated = [...prev]
+      const last = updated[updated.length - 1]
+      if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: cleanText }
+      return updated
+    })
+    onStreamEnd()
   }
 
   const loadGreeting = async () => {
@@ -400,15 +366,15 @@ function OnboardingChat({
           return
         }
       }
-      // No history — start fresh with greeting
+      // No history — start fresh with greeting (non-streaming, fast)
       const res = await apiFetch(`/api/guidance/sessions/${session.id}/onboarding/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: '', include_audio: voiceEnabled }),
+        body: JSON.stringify({ message: '' }),
       })
       if (res.ok) {
         const data = await res.json()
-        await addAlexMsg(data.response, data.audio)
+        addAlexMsg(data.response)
       }
     } catch {}
     setSending(false)
@@ -418,27 +384,22 @@ function OnboardingChat({
     setError('')
     setMessages(prev => [...prev, { role: 'user', text }])
     setSending(true)
+    startAlexMsg()
     try {
-      const res = await apiFetch(`/api/guidance/sessions/${session.id}/onboarding/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, include_audio: voiceEnabled }),
-      })
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}))
-        setError(d.error || 'Something went wrong.')
-        setSending(false)
-        return
-      }
-      const data = await res.json()
-      await addAlexMsg(data.response, data.audio)
-
-      if (data.start_roadmap) {
-        setSending(false)
-        setGeneratingRoadmap(true)
-        await generateRoadmap()
-        return
-      }
+      await streamFetch(
+        `/api/guidance/sessions/${session.id}/onboarding/stream/`,
+        { message: text },
+        (token) => { appendAlexToken(token); onToken(token) },
+        async (data) => {
+          finalizeAlexMsg(data.full_text as string)
+          if (data.start_roadmap) {
+            setSending(false)
+            setGeneratingRoadmap(true)
+            await generateRoadmap()
+          }
+        },
+        (err) => { setError(err); console.error(err) },
+      )
     } catch { setError('Network error.') }
     setSending(false)
   }
@@ -462,20 +423,12 @@ function OnboardingChat({
             <Link href="/ai/career-guidance" className="text-gray-500 hover:text-gray-900 text-sm">← Career Coach</Link>
             <h1 className="text-base font-bold text-gray-900 mt-0.5 truncate">{session.goal}</h1>
           </div>
-          <VoiceToggle enabled={voiceEnabled} onChange={onVoiceToggle} />
         </div>
       </header>
 
-      {/* Voice hint banner */}
-      {voiceEnabled && (
-        <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 text-center text-xs text-blue-600 font-medium">
-          🔊 Voice mode on — Alex will speak to you. Use 🎤 to reply by voice.
-        </div>
-      )}
-
       <div className="flex-1 overflow-y-auto max-w-3xl w-full mx-auto px-4 py-6 space-y-4">
         {messages.map((m, i) => (
-          <ChatBubble key={i} msg={m} speaking={speakingIdx === i} />
+          <ChatBubble key={i} msg={m} speaking={false} />
         ))}
         {(sending || generatingRoadmap) && <TypingIndicator />}
         {generatingRoadmap && (
@@ -495,7 +448,6 @@ function OnboardingChat({
             onSend={send}
             disabled={sending || generatingRoadmap}
             placeholder="Tell Alex about yourself..."
-            voiceEnabled={voiceEnabled}
           />
         </div>
       </div>
@@ -508,13 +460,9 @@ function OnboardingChat({
 function ActiveSession({
   session,
   onRefresh,
-  voiceEnabled,
-  onVoiceToggle,
 }: {
   session: Session
   onRefresh: () => void
-  voiceEnabled: boolean
-  onVoiceToggle: (v: boolean) => void
 }) {
   const currentTopic = session.topics.find(t => t.status === 'in_progress') || session.topics.find(t => t.status === 'pending')
   const [activeView, setActiveView] = useState<'lesson' | 'quiz' | 'chat'>('lesson')
@@ -544,7 +492,6 @@ function ActiveSession({
             {session.status === 'complete' && (
               <span className="text-xs bg-green-100 text-green-700 px-3 py-1 rounded-full font-medium">Complete!</span>
             )}
-            <VoiceToggle enabled={voiceEnabled} onChange={onVoiceToggle} />
             <button
               onClick={() => { setSelectedTopic(null); setActiveView('chat') }}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
@@ -558,12 +505,6 @@ function ActiveSession({
           </div>
         </div>
       </header>
-
-      {voiceEnabled && (
-        <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 text-center text-xs text-blue-600 font-medium">
-          🔊 Voice mode on — Alex will speak to you. Use 🎤 to reply by voice.
-        </div>
-      )}
 
       <div className="flex-1 flex max-w-6xl w-full mx-auto overflow-hidden">
         {/* Sidebar */}
@@ -629,7 +570,7 @@ function ActiveSession({
         {/* Main */}
         <main className="flex-1 flex flex-col overflow-hidden">
           {!selectedTopic || activeView === 'chat' ? (
-            <GeneralChat session={session} voiceEnabled={voiceEnabled} />
+            <GeneralChat session={session} />
           ) : (
             <>
               <div className="flex-shrink-0 bg-white border-b border-gray-200 px-6 py-4">
@@ -663,10 +604,10 @@ function ActiveSession({
               </div>
 
               {activeView === 'lesson' && (
-                <LessonChat session={session} topic={selectedTopic} voiceEnabled={voiceEnabled} onQuizReady={() => setActiveView('quiz')} />
+                <LessonChat session={session} topic={selectedTopic} onQuizReady={() => setActiveView('quiz')} />
               )}
               {activeView === 'quiz' && (
-                <QuizChat session={session} topic={selectedTopic} voiceEnabled={voiceEnabled} onComplete={onRefresh} />
+                <QuizChat session={session} topic={selectedTopic} onComplete={onRefresh} />
               )}
             </>
           )}
@@ -678,39 +619,61 @@ function ActiveSession({
 
 // ─── Shared chat hook ─────────────────────────────────────────────────────────
 
-function useChat(voiceEnabled: boolean) {
+function useChat() {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [sending, setSending] = useState(false)
   const [alexSpeaking, setAlexSpeaking] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
+  const alexSpeakingSet = (v: boolean) => setAlexSpeaking(v)
+  const { onToken, onStreamEnd, speakFull, stop } = useSentenceTTS(alexSpeakingSet)
+
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+  useEffect(() => { return () => { stop() } }, [])
 
   const addUser = (text: string) => setMessages(prev => [...prev, { role: 'user', text }])
 
-  const addAlex = async (text: string, audio: string | null) => {
-    setMessages(prev => [...prev, { role: 'alex', text }])
-    if (audio && voiceEnabled) {
-      setAlexSpeaking(true)
-      await playAudio(audio)
-      setAlexSpeaking(false)
-    }
+  // Start a new empty alex message for streaming
+  const startAlex = () => setMessages(prev => [...prev, { role: 'alex', text: '' }])
+
+  // Append a token to the last alex message
+  const appendToken = (token: string) => setMessages(prev => {
+    const updated = [...prev]
+    const last = updated[updated.length - 1]
+    if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: last.text + token }
+    return updated
+  })
+
+  // Finalize: replace last alex message with clean text, then trigger stream end for TTS
+  const finalizeAlex = (cleanText: string) => {
+    setMessages(prev => {
+      const updated = [...prev]
+      const last = updated[updated.length - 1]
+      if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: cleanText }
+      return updated
+    })
+    onStreamEnd()
   }
 
-  return { messages, setMessages, sending, setSending, alexSpeaking, addUser, addAlex, bottomRef }
+  // Non-streaming add (for greetings loaded from history)
+  const addAlex = (text: string) => {
+    setMessages(prev => [...prev, { role: 'alex', text }])
+    speakFull(text)
+  }
+
+  return { messages, setMessages, sending, setSending, alexSpeaking, addUser, addAlex, startAlex, appendToken, finalizeAlex, onToken, bottomRef }
 }
 
 // ─── Lesson Chat ──────────────────────────────────────────────────────────────
 
 function LessonChat({
-  session, topic, voiceEnabled, onQuizReady,
+  session, topic, onQuizReady,
 }: {
   session: Session
   topic: Topic
-  voiceEnabled: boolean
   onQuizReady: () => void
 }) {
-  const { messages, setMessages, sending, setSending, alexSpeaking, addUser, addAlex, bottomRef } = useChat(voiceEnabled)
+  const { messages, setMessages, sending, setSending, alexSpeaking, addUser, addAlex, startAlex, appendToken, finalizeAlex, onToken, bottomRef } = useChat()
   const [quizPrompted, setQuizPrompted] = useState(false)
   const [error, setError] = useState('')
   const loadedTopicRef = useRef<number | null>(null)
@@ -736,15 +699,15 @@ function LessonChat({
           return
         }
       }
-      // No history — start the lesson fresh
+      // No history — start the lesson fresh (non-streaming for opening)
       const res = await apiFetch(`/api/guidance/sessions/${session.id}/topics/${topic.id}/lesson/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: '', include_audio: voiceEnabled }),
+        body: JSON.stringify({ message: '' }),
       })
       if (res.ok) {
         const data = await res.json()
-        await addAlex(data.response, data.audio)
+        addAlex(data.response)
         if (data.quiz_ready) setQuizPrompted(true)
       }
     } catch {}
@@ -755,16 +718,18 @@ function LessonChat({
     setError('')
     addUser(text)
     setSending(true)
+    startAlex()
     try {
-      const res = await apiFetch(`/api/guidance/sessions/${session.id}/topics/${topic.id}/lesson/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, include_audio: voiceEnabled }),
-      })
-      if (!res.ok) { setError('Something went wrong.'); setSending(false); return }
-      const data = await res.json()
-      await addAlex(data.response, data.audio)
-      if (data.quiz_ready && !quizPrompted) setQuizPrompted(true)
+      await streamFetch(
+        `/api/guidance/sessions/${session.id}/topics/${topic.id}/lesson/stream/`,
+        { message: text },
+        (token) => { appendToken(token); onToken(token) },
+        async (data) => {
+          finalizeAlex(data.full_text as string)
+          if (data.quiz_ready && !quizPrompted) setQuizPrompted(true)
+        },
+        (err) => { setError(err); console.error(err) },
+      )
     } catch { setError('Network error.') }
     setSending(false)
   }
@@ -788,7 +753,7 @@ function LessonChat({
         <div ref={bottomRef} />
       </div>
       <div className="flex-shrink-0 bg-white border-t border-gray-200 px-6 py-4">
-        <ChatInput onSend={send} disabled={sending} placeholder="Ask a question or respond to Alex..." voiceEnabled={voiceEnabled} />
+        <ChatInput onSend={send} disabled={sending} placeholder="Ask a question or respond to Alex..." />
       </div>
     </div>
   )
@@ -797,14 +762,13 @@ function LessonChat({
 // ─── Quiz Chat ────────────────────────────────────────────────────────────────
 
 function QuizChat({
-  session, topic, voiceEnabled, onComplete,
+  session, topic, onComplete,
 }: {
   session: Session
   topic: Topic
-  voiceEnabled: boolean
   onComplete: () => void
 }) {
-  const { messages, setMessages, sending, setSending, alexSpeaking, addUser, addAlex, bottomRef } = useChat(voiceEnabled)
+  const { messages, setMessages, sending, setSending, alexSpeaking, addUser, addAlex, startAlex, appendToken, finalizeAlex, onToken, bottomRef } = useChat()
   const [result, setResult] = useState<{ score: number; passed: boolean } | null>(null)
   const [error, setError] = useState('')
   const loadedTopicRef = useRef<number | null>(null)
@@ -831,15 +795,15 @@ function QuizChat({
           return
         }
       }
-      // No history — start the quiz fresh
+      // No history — start the quiz fresh (non-streaming for opening)
       const res = await apiFetch(`/api/guidance/sessions/${session.id}/topics/${topic.id}/quiz/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: '', include_audio: voiceEnabled }),
+        body: JSON.stringify({ message: '' }),
       })
       if (res.ok) {
         const data = await res.json()
-        await addAlex(data.response, data.audio)
+        addAlex(data.response)
       }
     } catch {}
     setSending(false)
@@ -849,19 +813,21 @@ function QuizChat({
     setError('')
     addUser(text)
     setSending(true)
+    startAlex()
     try {
-      const res = await apiFetch(`/api/guidance/sessions/${session.id}/topics/${topic.id}/quiz/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, include_audio: voiceEnabled }),
-      })
-      if (!res.ok) { setError('Something went wrong.'); setSending(false); return }
-      const data = await res.json()
-      await addAlex(data.response, data.audio)
-      if (data.quiz_complete) {
-        setResult({ score: data.score, passed: data.passed })
-        onComplete()
-      }
+      await streamFetch(
+        `/api/guidance/sessions/${session.id}/topics/${topic.id}/quiz/stream/`,
+        { message: text },
+        (token) => { appendToken(token); onToken(token) },
+        async (data) => {
+          finalizeAlex(data.full_text as string)
+          if (data.quiz_complete) {
+            setResult({ score: data.score as number, passed: data.passed as boolean })
+            onComplete()
+          }
+        },
+        (err) => { setError(err); console.error(err) },
+      )
     } catch { setError('Network error.') }
     setSending(false)
   }
@@ -886,7 +852,7 @@ function QuizChat({
       </div>
       {!result && (
         <div className="flex-shrink-0 bg-white border-t border-gray-200 px-6 py-4">
-          <ChatInput onSend={send} disabled={sending} placeholder="Type your answer..." voiceEnabled={voiceEnabled} />
+          <ChatInput onSend={send} disabled={sending} placeholder="Type your answer..." />
         </div>
       )}
     </div>
@@ -895,8 +861,8 @@ function QuizChat({
 
 // ─── General Chat ─────────────────────────────────────────────────────────────
 
-function GeneralChat({ session, voiceEnabled }: { session: Session; voiceEnabled: boolean }) {
-  const { messages, setMessages, sending, setSending, alexSpeaking, addUser, addAlex, bottomRef } = useChat(voiceEnabled)
+function GeneralChat({ session }: { session: Session }) {
+  const { messages, setMessages, sending, setSending, alexSpeaking, addUser, startAlex, appendToken, finalizeAlex, onToken, bottomRef } = useChat()
   const [error, setError] = useState('')
   const loadedRef = useRef(false)
 
@@ -924,15 +890,17 @@ function GeneralChat({ session, voiceEnabled }: { session: Session; voiceEnabled
     setError('')
     addUser(text)
     setSending(true)
+    startAlex()
     try {
-      const res = await apiFetch(`/api/guidance/sessions/${session.id}/chat/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, include_audio: voiceEnabled }),
-      })
-      if (!res.ok) { setError('Something went wrong.'); setSending(false); return }
-      const data = await res.json()
-      await addAlex(data.response, data.audio)
+      await streamFetch(
+        `/api/guidance/sessions/${session.id}/chat/stream/`,
+        { message: text },
+        (token) => { appendToken(token); onToken(token) },
+        async (data) => {
+          finalizeAlex(data.full_text as string)
+        },
+        (err) => { setError(err); console.error(err) },
+      )
     } catch { setError('Network error.') }
     setSending(false)
   }
@@ -950,7 +918,7 @@ function GeneralChat({ session, voiceEnabled }: { session: Session; voiceEnabled
         <div ref={bottomRef} />
       </div>
       <div className="flex-shrink-0 bg-white border-t border-gray-200 px-6 py-4">
-        <ChatInput onSend={send} disabled={sending} placeholder="Ask Alex anything..." voiceEnabled={voiceEnabled} />
+        <ChatInput onSend={send} disabled={sending} placeholder="Ask Alex anything..." />
       </div>
     </div>
   )

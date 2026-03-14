@@ -33,6 +33,52 @@ async function refreshAccessToken(): Promise<string | null> {
   return data.access
 }
 
+export async function streamFetch(
+  path: string,
+  body: object,
+  onToken: (token: string) => void,
+  onDone: (data: Record<string, unknown>) => void,
+  onError?: (msg: string) => void,
+): Promise<void> {
+  const token = localStorage.getItem('access_token')
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || ''
+
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!res.ok || !res.body) {
+    onError?.(`Request failed: ${res.status}`)
+    return
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      try {
+        const data = JSON.parse(line.slice(6))
+        if (data.type === 'text') onToken(data.content)
+        else if (data.type === 'done') onDone(data)
+        else if (data.type === 'error') onError?.(data.message)
+      } catch {}
+    }
+  }
+}
+
 export async function apiFetch(
   path: string,
   options: RequestInit = {}

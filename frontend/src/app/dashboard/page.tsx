@@ -43,6 +43,9 @@ export default function Dashboard() {
             </div>
             <div className="flex items-center space-x-4">
               <TokenBalance />
+              <Link href="/activity" className="text-gray-600 hover:text-gray-900 text-sm font-medium">
+                My Activity
+              </Link>
               <Link href="/profile" className="text-gray-600 hover:text-gray-900">
                 Profile
               </Link>
@@ -234,27 +237,15 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Stats Section */}
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Your Progress</h3>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div className="text-center">
-              <div className="text-3xl font-bold text-blue-600">0</div>
-              <div className="text-gray-600">CVs Created</div>
-            </div>
-            <div className="text-center">
-              <div className="text-3xl font-bold text-green-600">0</div>
-              <div className="text-gray-600">Jobs Applied</div>
-            </div>
-            <div className="text-center">
-              <div className="text-3xl font-bold text-purple-600">0</div>
-              <div className="text-gray-600">Interviews Practiced</div>
-            </div>
-            <div className="text-center">
-              <div className="text-3xl font-bold text-orange-600">0</div>
-              <div className="text-gray-600">Simulations Completed</div>
-            </div>
+        {/* Activity CTA */}
+        <div className="bg-white rounded-lg shadow-md p-6 flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Track your progress</h3>
+            <p className="text-gray-500 text-sm mt-1">View your interview history, coaching sessions, scores, and topics completed.</p>
           </div>
+          <Link href="/activity" className="bg-gray-900 text-white px-5 py-2.5 rounded-lg hover:bg-gray-700 text-sm font-medium shrink-0 ml-6">
+            My Activity →
+          </Link>
         </div>
       </main>
     </div>

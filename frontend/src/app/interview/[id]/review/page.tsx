@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { apiFetch } from '@/lib/apiFetch'
+import { apiFetch, streamFetch } from '@/lib/apiFetch'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -129,37 +129,41 @@ function ReviewSession() {
 
     // Add user message immediately
     setMessages((prev) => [...prev, { role: 'user', text }])
+    // Add empty alex message for streaming
+    setMessages((prev) => [...prev, { role: 'alex', text: '' }])
 
     try {
-      const res = await apiFetch(`/api/interview/sessions/${sessionId}/review/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-        const replyText = data.message || data.reply || data.response || 'Thank you for sharing that.'
-        setMessages((prev) => [...prev, { role: 'alex', text: replyText }])
-
-        if (data.audio_base64) {
-          playAudio(data.audio_base64)
-        }
-
-        if (data.review_complete || data.complete) {
-          setReviewComplete(true)
-          if (data.session) setSession(data.session)
-        }
-      } else {
-        const data = await res.json().catch(() => ({}))
-        setError(data.error || data.detail || 'Failed to send message.')
-        // Remove the user message on error
-        setMessages((prev) => prev.slice(0, -1))
-        setUserInput(text)
-      }
+      await streamFetch(
+        `/api/interview/sessions/${sessionId}/review/stream/`,
+        { message: text },
+        (token) => {
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: last.text + token }
+            return updated
+          })
+        },
+        async (data) => {
+          const cleanText = data.full_text as string
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: cleanText }
+            return updated
+          })
+          if (data.audio) playAudio(data.audio as string)
+        },
+        (err) => {
+          setError(err)
+          // Remove the empty alex placeholder on error
+          setMessages((prev) => prev.slice(0, -1))
+          setUserInput(text)
+        },
+      )
     } catch {
       setError('Network error. Please try again.')
-      setMessages((prev) => prev.slice(0, -1))
+      setMessages((prev) => prev.slice(0, -2))
       setUserInput(text)
     } finally {
       setSending(false)
@@ -170,23 +174,33 @@ function ReviewSession() {
   const handleDone = async () => {
     setMessages((prev) => [...prev, { role: 'user', text: "I'm done with this review." }])
     setSending(true)
+    setMessages((prev) => [...prev, { role: 'alex', text: '' }])
     try {
-      const res = await apiFetch(`/api/interview/sessions/${sessionId}/review/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: "I'm ready to move on." }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.message || data.reply) {
-          setMessages((prev) => [
-            ...prev,
-            { role: 'alex', text: data.message || data.reply },
-          ])
-          if (data.audio_base64) playAudio(data.audio_base64)
-        }
-        if (data.session) setSession(data.session)
-      }
+      await streamFetch(
+        `/api/interview/sessions/${sessionId}/review/stream/`,
+        { message: "I'm ready to move on." },
+        (token) => {
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: last.text + token }
+            return updated
+          })
+        },
+        async (data) => {
+          const cleanText = data.full_text as string
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: cleanText }
+            return updated
+          })
+          if (data.audio) playAudio(data.audio as string)
+        },
+        () => {
+          // Non-critical on error
+        },
+      )
     } catch {
       // Non-critical
     } finally {

@@ -1,7 +1,10 @@
 import base64
+import json as _json
 import logging
 
+from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -30,6 +33,48 @@ from .services.interview_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sse_stream(token_gen, save_fn, tts_fn, sentinel_fn):
+    """
+    token_gen: generator yielding text tokens from Claude
+    save_fn(clean_text): saves the response to DB
+    tts_fn(clean_text): returns base64 audio or None
+    sentinel_fn(full_text): returns (clean_text, metadata_dict)
+    """
+    def generator():
+        full_text = ""
+        try:
+            for token in token_gen:
+                full_text += token
+                yield f"data: {_json.dumps({'type': 'text', 'content': token})}\n\n"
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            return
+
+        clean_text, metadata = sentinel_fn(full_text)
+
+        try:
+            save_fn(clean_text)
+        except Exception as e:
+            logger.error("Failed to save streamed response: %s", e)
+
+        audio = None
+        try:
+            audio = tts_fn(clean_text)
+        except Exception:
+            pass
+
+        done_event = {'type': 'done', 'full_text': clean_text, **metadata}
+        if audio:
+            done_event['audio'] = audio
+
+        yield f"data: {_json.dumps(done_event)}\n\n"
+
+    response = StreamingHttpResponse(generator(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -659,3 +704,225 @@ def transcribe_endpoint(request):
         return Response({'error': f'Transcription failed: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return Response({'text': text})
+
+
+# ── Streaming endpoints ────────────────────────────────────────────────────────
+
+@csrf_exempt
+def stream_intro_chat(request, session_id):
+    """
+    POST — SSE streaming version of intro_chat.
+    Streams Claude tokens, then fires a 'done' event with clean text + optional audio.
+    """
+    from django.http import JsonResponse
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    try:
+        auth = JWTAuthentication()
+        user_auth = auth.authenticate(request)
+        if user_auth is None:
+            from django.http import JsonResponse
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        request.user = user_auth[0]
+    except Exception:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    if session.status != 'intro':
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Session is not in intro phase.'}, status=400)
+
+    import json as _json2
+    try:
+        body = _json2.loads(request.body)
+    except Exception:
+        body = {}
+
+    user_message = body.get('message', '').strip()
+    include_audio = body.get('include_audio', False)
+
+    if not user_message:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'message is required.'}, status=400)
+
+    # Load existing conversation history (phase=0 for intro)
+    history_qs = ReviewMessage.objects.filter(session=session, phase=0).order_by('created_at')
+    conversation_history = []
+    for m in history_qs:
+        role = 'assistant' if m.role == 'alex' else 'user'
+        conversation_history.append({'role': role, 'content': m.content})
+
+    # Save user message
+    ReviewMessage.objects.create(session=session, phase=0, role='user', content=user_message)
+
+    token_gen = chat_intro(session, user_message, conversation_history, stream=True)
+
+    def save_fn(clean_text):
+        ReviewMessage.objects.create(session=session, phase=0, role='alex', content=clean_text)
+
+    def tts_fn(clean_text):
+        if session.mode == 'voice' and include_audio:
+            audio_bytes = text_to_speech(clean_text)
+            if audio_bytes:
+                return base64.b64encode(audio_bytes).decode('utf-8')
+        return None
+
+    def sentinel_fn(full_text):
+        start_phase1 = '[READY_TO_START]' in full_text
+        clean = full_text.replace('[READY_TO_START]', '').strip()
+        return clean, {'start_phase1': start_phase1}
+
+    return _sse_stream(token_gen, save_fn, tts_fn, sentinel_fn)
+
+
+@csrf_exempt
+def stream_review_chat(request, session_id):
+    """
+    POST — SSE streaming version of review_chat.
+    """
+    if request.method != 'POST':
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    try:
+        auth = JWTAuthentication()
+        user_auth = auth.authenticate(request)
+        if user_auth is None:
+            from django.http import JsonResponse
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        request.user = user_auth[0]
+    except Exception:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+    phase = _current_phase_number(session)
+
+    import json as _json2
+    try:
+        body = _json2.loads(request.body)
+    except Exception:
+        body = {}
+
+    user_message = body.get('message', '').strip()
+    include_audio = body.get('include_audio', False)
+
+    if not user_message:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'message is required.'}, status=400)
+
+    # Save user's message
+    ReviewMessage.objects.create(session=session, phase=phase, role='user', content=user_message)
+
+    # Build conversation history
+    history_qs = ReviewMessage.objects.filter(session=session, phase=phase).order_by('created_at')
+    conversation_history = []
+    for m in history_qs:
+        role = 'assistant' if m.role == 'alex' else 'user'
+        conversation_history.append({'role': role, 'content': m.content})
+
+    # Remove the last user entry — it's appended inside chat_review
+    if conversation_history and conversation_history[-1]['role'] == 'user':
+        conversation_history = conversation_history[:-1]
+
+    token_gen = chat_review(session, phase, user_message, conversation_history, stream=True)
+
+    def save_fn(clean_text):
+        ReviewMessage.objects.create(session=session, phase=phase, role='alex', content=clean_text)
+
+    def tts_fn(clean_text):
+        if session.mode == 'voice' and include_audio:
+            audio_bytes = text_to_speech(clean_text)
+            if audio_bytes:
+                return base64.b64encode(audio_bytes).decode('utf-8')
+        return None
+
+    def sentinel_fn(full_text):
+        return full_text, {}
+
+    return _sse_stream(token_gen, save_fn, tts_fn, sentinel_fn)
+
+
+@csrf_exempt
+def stream_question_coach(request, session_id):
+    """
+    POST — SSE streaming version of question_coach.
+    Body: { question_id, message, include_audio }
+    """
+    if request.method != 'POST':
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    try:
+        auth = JWTAuthentication()
+        user_auth = auth.authenticate(request)
+        if user_auth is None:
+            from django.http import JsonResponse
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        request.user = user_auth[0]
+    except Exception:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    session = get_object_or_404(InterviewSession, id=session_id, user=request.user)
+
+    import json as _json2
+    try:
+        body = _json2.loads(request.body)
+    except Exception:
+        body = {}
+
+    question_id = body.get('question_id')
+    user_message = body.get('message', '').strip()
+    include_audio = body.get('include_audio', False)
+
+    if not question_id or not user_message:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'question_id and message are required.'}, status=400)
+
+    question = get_object_or_404(InterviewQuestion, id=question_id, session=session)
+
+    try:
+        answer = question.answer
+    except InterviewAnswer.DoesNotExist:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Question has not been answered yet.'}, status=400)
+
+    # Load coaching history for this question
+    history_qs = ReviewMessage.objects.filter(session=session, question_ref=question).order_by('created_at')
+    conversation_history = []
+    for m in history_qs:
+        role = 'assistant' if m.role == 'alex' else 'user'
+        conversation_history.append({'role': role, 'content': m.content})
+
+    # Save user message
+    ReviewMessage.objects.create(
+        session=session, phase=question.phase, role='user',
+        content=user_message, question_ref=question
+    )
+
+    token_gen = chat_question_coaching(session, question, answer, user_message, conversation_history, stream=True)
+
+    def save_fn(clean_text):
+        ReviewMessage.objects.create(
+            session=session, phase=question.phase, role='alex',
+            content=clean_text, question_ref=question
+        )
+
+    def tts_fn(clean_text):
+        if session.mode == 'voice' and include_audio:
+            audio_bytes = text_to_speech(clean_text)
+            if audio_bytes:
+                return base64.b64encode(audio_bytes).decode('utf-8')
+        return None
+
+    def sentinel_fn(full_text):
+        return full_text, {}
+
+    return _sse_stream(token_gen, save_fn, tts_fn, sentinel_fn)

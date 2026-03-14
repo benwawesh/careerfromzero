@@ -1,4 +1,8 @@
+import json as _json
 import logging
+
+from django.http import StreamingHttpResponse
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -16,6 +20,48 @@ from .services.guidance_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sse_stream(token_gen, save_fn, tts_fn, sentinel_fn):
+    """
+    token_gen: generator yielding text tokens from Claude
+    save_fn(clean_text): saves the response to DB
+    tts_fn(clean_text): returns base64 audio or None
+    sentinel_fn(full_text): returns (clean_text, metadata_dict)
+    """
+    def generator():
+        full_text = ""
+        try:
+            for token in token_gen:
+                full_text += token
+                yield f"data: {_json.dumps({'type': 'text', 'content': token})}\n\n"
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            return
+
+        clean_text, metadata = sentinel_fn(full_text)
+
+        try:
+            save_fn(clean_text)
+        except Exception as e:
+            logger.error("Failed to save streamed response: %s", e)
+
+        audio = None
+        try:
+            audio = tts_fn(clean_text)
+        except Exception:
+            pass
+
+        done_event = {'type': 'done', 'full_text': clean_text, **metadata}
+        if audio:
+            done_event['audio'] = audio
+
+        yield f"data: {_json.dumps(done_event)}\n\n"
+
+    response = StreamingHttpResponse(generator(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
 
 
 def _serialize_topic(t: GuidanceTopic) -> dict:
@@ -374,3 +420,373 @@ def general_chat(request, session_id):
 
     audio = generate_tts(text) if include_audio else None
     return Response({'response': text, 'audio': audio})
+
+
+# ── Streaming endpoints ────────────────────────────────────────────────────────
+
+def _authenticate_streaming(request):
+    """Authenticate a streaming request using JWT. Returns user or None."""
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    try:
+        auth = JWTAuthentication()
+        user_auth = auth.authenticate(request)
+        if user_auth is None:
+            return None
+        return user_auth[0]
+    except Exception:
+        return None
+
+
+@csrf_exempt
+def stream_onboarding_chat(request, session_id):
+    """
+    POST — SSE streaming version of onboarding_chat.
+    Streams Claude tokens, then fires a 'done' event with clean text + optional audio.
+    """
+    if request.method != 'POST':
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    user = _authenticate_streaming(request)
+    if user is None:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    try:
+        session = GuidanceSession.objects.get(id=session_id, user=user)
+    except GuidanceSession.DoesNotExist:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Not found'}, status=404)
+
+    if session.status != 'onboarding':
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Session is not in onboarding'}, status=400)
+
+    try:
+        body = _json.loads(request.body)
+    except Exception:
+        body = {}
+
+    message = body.get('message', '').strip()
+    include_audio = body.get('include_audio', False)
+
+    if not message:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'message is required'}, status=400)
+
+    history = _history_for_session(session)
+    _save_message(session, 'user', message)
+
+    token_gen = chat_onboarding(session, message, history, stream=True)
+
+    def save_fn(clean_text):
+        _save_message(session, 'alex', clean_text)
+        if '[ROADMAP_READY]' in clean_text or start_roadmap_flag[0]:
+            _extract_and_save_profile(session)
+
+    start_roadmap_flag = [False]
+
+    def sentinel_fn(full_text):
+        start_roadmap = '[ROADMAP_READY]' in full_text
+        start_roadmap_flag[0] = start_roadmap
+        clean = full_text.replace('[ROADMAP_READY]', '').strip()
+        return clean, {'start_roadmap': start_roadmap}
+
+    def tts_fn(clean_text):
+        if include_audio:
+            return generate_tts(clean_text)
+        return None
+
+    # We need sentinel_fn to run before save_fn to set start_roadmap_flag.
+    # Override _sse_stream inline to get the correct ordering.
+    def generator():
+        full_text = ""
+        try:
+            for token in token_gen:
+                full_text += token
+                yield f"data: {_json.dumps({'type': 'text', 'content': token})}\n\n"
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            return
+
+        clean_text, metadata = sentinel_fn(full_text)
+
+        # Save alex message
+        try:
+            _save_message(session, 'alex', clean_text)
+        except Exception as e:
+            logger.error("Failed to save streamed response: %s", e)
+
+        # Profile extraction if roadmap ready
+        if metadata.get('start_roadmap'):
+            try:
+                _extract_and_save_profile(session)
+            except Exception as e:
+                logger.error("Profile extraction failed: %s", e)
+
+        audio = None
+        try:
+            audio = tts_fn(clean_text)
+        except Exception:
+            pass
+
+        done_event = {'type': 'done', 'full_text': clean_text, **metadata}
+        if audio:
+            done_event['audio'] = audio
+
+        yield f"data: {_json.dumps(done_event)}\n\n"
+
+    response = StreamingHttpResponse(generator(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
+
+
+@csrf_exempt
+def stream_general_chat(request, session_id):
+    """
+    POST — SSE streaming version of general_chat.
+    """
+    if request.method != 'POST':
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    user = _authenticate_streaming(request)
+    if user is None:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    try:
+        session = GuidanceSession.objects.get(id=session_id, user=user)
+    except GuidanceSession.DoesNotExist:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Not found'}, status=404)
+
+    try:
+        body = _json.loads(request.body)
+    except Exception:
+        body = {}
+
+    message = body.get('message', '').strip()
+    include_audio = body.get('include_audio', False)
+
+    if not message:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'message is required'}, status=400)
+
+    history = _history_for_session(session, topic=None)[-20:]
+    _save_message(session, 'user', message)
+
+    token_gen = chat_general(session, message, history, stream=True)
+
+    def save_fn(clean_text):
+        _save_message(session, 'alex', clean_text)
+
+    def tts_fn(clean_text):
+        if include_audio:
+            return generate_tts(clean_text)
+        return None
+
+    def sentinel_fn(full_text):
+        return full_text, {}
+
+    return _sse_stream(token_gen, save_fn, tts_fn, sentinel_fn)
+
+
+@csrf_exempt
+def stream_lesson_chat(request, session_id, topic_id):
+    """
+    POST — SSE streaming version of lesson_chat.
+    """
+    if request.method != 'POST':
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    user = _authenticate_streaming(request)
+    if user is None:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    try:
+        session = GuidanceSession.objects.get(id=session_id, user=user)
+        topic = GuidanceTopic.objects.get(id=topic_id, session=session)
+    except (GuidanceSession.DoesNotExist, GuidanceTopic.DoesNotExist):
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Not found'}, status=404)
+
+    if topic.status == 'complete':
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Topic is already complete'}, status=400)
+
+    try:
+        body = _json.loads(request.body)
+    except Exception:
+        body = {}
+
+    message = body.get('message', '').strip()
+    include_audio = body.get('include_audio', False)
+
+    if not message:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'message is required'}, status=400)
+
+    history = _history_for_session(session, topic=topic)
+    _save_message(session, 'user', message, topic=topic)
+
+    if topic.status == 'pending':
+        topic.status = 'in_progress'
+        topic.save()
+
+    token_gen = chat_lesson(session, topic, message, history, stream=True)
+
+    def save_fn(clean_text):
+        _save_message(session, 'alex', clean_text, topic=topic)
+
+    def tts_fn(clean_text):
+        if include_audio:
+            return generate_tts(clean_text)
+        return None
+
+    def sentinel_fn(full_text):
+        quiz_ready = '[QUIZ_READY]' in full_text
+        clean = full_text.replace('[QUIZ_READY]', '').strip()
+        return clean, {'quiz_ready': quiz_ready}
+
+    return _sse_stream(token_gen, save_fn, tts_fn, sentinel_fn)
+
+
+@csrf_exempt
+def stream_quiz_chat(request, session_id, topic_id):
+    """
+    POST — SSE streaming version of quiz_chat.
+    """
+    if request.method != 'POST':
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    user = _authenticate_streaming(request)
+    if user is None:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    try:
+        session = GuidanceSession.objects.get(id=session_id, user=user)
+        topic = GuidanceTopic.objects.get(id=topic_id, session=session)
+    except (GuidanceSession.DoesNotExist, GuidanceTopic.DoesNotExist):
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'Not found'}, status=404)
+
+    try:
+        body = _json.loads(request.body)
+    except Exception:
+        body = {}
+
+    message = body.get('message', '').strip()
+    include_audio = body.get('include_audio', False)
+
+    if not message:
+        from django.http import JsonResponse
+        return JsonResponse({'error': 'message is required'}, status=400)
+
+    history = _history_for_session(session, topic=topic)
+    _save_message(session, 'user', message, topic=topic)
+
+    token_gen = run_quiz(session, topic, message, history, stream=True)
+
+    def sentinel_fn(full_text):
+        score = None
+        passed = None
+        quiz_complete = False
+
+        if '[QUIZ_COMPLETE:' in full_text:
+            quiz_complete = True
+            try:
+                score_str = full_text.split('[QUIZ_COMPLETE:')[1].split(']')[0].strip()
+                score = float(score_str)
+                passed = score >= 70
+            except (ValueError, IndexError):
+                score = 0.0
+                passed = False
+
+        clean = full_text
+        if '[QUIZ_COMPLETE:' in full_text:
+            clean = full_text[:full_text.find('[QUIZ_COMPLETE:')].strip()
+
+        return clean, {
+            'quiz_complete': quiz_complete,
+            'score': score,
+            'passed': passed,
+        }
+
+    def save_fn(clean_text):
+        _save_message(session, 'alex', clean_text, topic=topic)
+        # Re-detect sentinel to update topic
+        if '[QUIZ_COMPLETE:' in clean_text:
+            # clean_text already has sentinel stripped, use original from closure
+            pass
+
+    # We need access to the parsed metadata in save_fn for topic updates.
+    # Use a custom generator approach.
+    def generator():
+        full_text = ""
+        try:
+            for token in token_gen:
+                full_text += token
+                yield f"data: {_json.dumps({'type': 'text', 'content': token})}\n\n"
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            return
+
+        clean_text, metadata = sentinel_fn(full_text)
+
+        try:
+            _save_message(session, 'alex', clean_text, topic=topic)
+        except Exception as e:
+            logger.error("Failed to save streamed quiz response: %s", e)
+
+        if metadata.get('quiz_complete'):
+            try:
+                topic.score = metadata['score']
+                topic.passed = metadata['passed']
+                topic.status = 'complete'
+                topic.save()
+
+                if metadata['passed']:
+                    next_topic = session.topics.filter(order=topic.order + 1).first()
+                    if next_topic:
+                        next_topic.status = 'in_progress'
+                        next_topic.save()
+                    else:
+                        session.status = 'complete'
+                        session.save()
+            except Exception as e:
+                logger.error("Failed to update topic after quiz: %s", e)
+
+        audio = None
+        try:
+            if include_audio:
+                audio = generate_tts(clean_text)
+        except Exception:
+            pass
+
+        done_event = {'type': 'done', 'full_text': clean_text, **metadata}
+        if audio:
+            done_event['audio'] = audio
+
+        yield f"data: {_json.dumps(done_event)}\n\n"
+
+    response = StreamingHttpResponse(generator(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def tts(request):
+    """Generate TTS audio for given text. Returns { audio: base64 } or { audio: null }."""
+    text = request.data.get('text', '').strip()
+    if not text:
+        return Response({'error': 'text is required'}, status=status.HTTP_400_BAD_REQUEST)
+    audio = generate_tts(text)
+    return Response({'audio': audio})

@@ -4,7 +4,8 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { apiFetch } from '@/lib/apiFetch'
+import { apiFetch, streamFetch } from '@/lib/apiFetch'
+import { useSentenceTTS } from '@/lib/sentenceTTS'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,13 +49,6 @@ interface Session {
 type ChatMsg = { role: 'alex' | 'user'; text: string }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function playAudio(base64: string) {
-  try {
-    const audio = new Audio(`data:audio/mp3;base64,${base64}`)
-    audio.play().catch(() => {})
-  } catch {}
-}
 
 // ─── Page wrapper ─────────────────────────────────────────────────────────────
 
@@ -334,6 +328,13 @@ function QuestionCoach({
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const { onToken, onStreamEnd, speakFull, stop } = useSentenceTTS()
+
+  useEffect(() => {
+    const initialText = question.answer?.feedback || "Let's go over your answer. What would you like to understand better?"
+    speakFull(initialText)
+    return () => stop() // cleanup cancels double-fire in React StrictMode
+  }, [])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -345,17 +346,33 @@ function QuestionCoach({
     setInput('')
     setMessages((prev) => [...prev, { role: 'user', text: msg }])
     setSending(true)
+    // Add empty alex message for streaming
+    setMessages((prev) => [...prev, { role: 'alex', text: '' }])
     try {
-      const res = await apiFetch(`/api/interview/sessions/${session.id}/question-coach/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question_id: question.id, message: msg }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setMessages((prev) => [...prev, { role: 'alex', text: data.response }])
-        if (data.audio) playAudio(data.audio)
-      }
+      await streamFetch(
+        `/api/interview/sessions/${session.id}/question-coach/stream/`,
+        { question_id: question.id, message: msg },
+        (token) => {
+          onToken(token)
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: last.text + token }
+            return updated
+          })
+        },
+        async (data) => {
+          const cleanText = data.full_text as string
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: cleanText }
+            return updated
+          })
+          onStreamEnd()
+        },
+        (err) => console.error(err),
+      )
     } catch {}
     setSending(false)
   }
@@ -433,6 +450,7 @@ function IntroChat({
   const [startingPhase1, setStartingPhase1] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const greetingFetched = useRef(false)
+  const { onToken, onStreamEnd, speakFull } = useSentenceTTS()
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -454,7 +472,7 @@ function IntroChat({
       if (res.ok) {
         const data = await res.json()
         setMessages([{ role: 'alex', text: data.response }])
-        if (data.audio) playAudio(data.audio)
+        speakFull(data.response)
       }
     } catch {}
     setLoading(false)
@@ -465,29 +483,47 @@ function IntroChat({
     setInput('')
     setMessages((prev) => [...prev, { role: 'user', text }])
     setSending(true)
+    // Add empty alex message for streaming
+    setMessages((prev) => [...prev, { role: 'alex', text: '' }])
     try {
-      const res = await apiFetch(`/api/interview/sessions/${session.id}/intro/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setMessages((prev) => [...prev, { role: 'alex', text: data.response }])
-        if (data.audio) playAudio(data.audio)
-        if (data.start_phase1) {
-          setSending(false)
-          setStartingPhase1(true)
-          const phase1Res = await apiFetch(`/api/interview/sessions/${session.id}/start-phase1/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+      let startPhase1 = false
+      await streamFetch(
+        `/api/interview/sessions/${session.id}/intro/stream/`,
+        { message: text },
+        (token) => {
+          onToken(token)
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: last.text + token }
+            return updated
           })
-          if (phase1Res.ok) {
-            onPhase1Ready(await phase1Res.json())
-          }
-          setStartingPhase1(false)
-          return
+        },
+        async (data) => {
+          const cleanText = data.full_text as string
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last?.role === 'alex') updated[updated.length - 1] = { ...last, text: cleanText }
+            return updated
+          })
+          onStreamEnd()
+          if (data.start_phase1) startPhase1 = true
+        },
+        (err) => console.error(err),
+      )
+      if (startPhase1) {
+        setSending(false)
+        setStartingPhase1(true)
+        const phase1Res = await apiFetch(`/api/interview/sessions/${session.id}/start-phase1/`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        })
+        if (phase1Res.ok) {
+          onPhase1Ready(await phase1Res.json())
         }
+        setStartingPhase1(false)
+        return
       }
     } catch {}
     setSending(false)
@@ -950,6 +986,7 @@ function ConversationalPhase({
   const [completingPhase, setCompletingPhase] = useState(false)
   const [error, setError] = useState('')
   const chatBottomRef = useRef<HTMLDivElement>(null)
+  const { speakFull } = useSentenceTTS()
 
   const currentQuestion = phaseQuestions[currentIndex]
   const totalQuestions = phaseQuestions.length
@@ -995,7 +1032,7 @@ function ConversationalPhase({
         )
         onSessionUpdate({ ...session, questions: updatedQuestions })
         setUserAnswer('')
-        if (data.audio) playAudio(data.audio)
+        if (data.feedback) speakFull(data.feedback as string)
       } else {
         const data = await res.json().catch(() => ({}))
         setError(data.error || 'Failed to submit answer.')

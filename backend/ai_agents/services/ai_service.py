@@ -94,6 +94,44 @@ class AIService:
             logger.error("Claude chat error: %s", e)
             raise Exception(f"Claude API error: {e}")
 
+    def chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: Optional[int] = None,
+        temperature: float = 0.7
+    ) -> Generator[str, None, None]:
+        """Streaming chat — yields text tokens as Claude generates them."""
+        if not self.client:
+            raise Exception("ANTHROPIC_API_KEY is not set in .env")
+
+        system = None
+        user_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system = msg["content"]
+            else:
+                user_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        if not user_messages:
+            user_messages = [{"role": "user", "content": "Hello"}]
+
+        kwargs = {
+            "model": self.model,
+            "max_tokens": max_tokens or 2048,
+            "temperature": temperature,
+            "messages": user_messages,
+        }
+        if system:
+            kwargs["system"] = system
+
+        try:
+            with self.client.messages.stream(**kwargs) as stream:
+                for text in stream.text_stream:
+                    yield text
+        except Exception as e:
+            logger.error("Claude chat stream error: %s", e)
+            raise Exception(f"Claude API error: {e}")
+
     def check_connection(self) -> bool:
         if not self.client:
             return False
